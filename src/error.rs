@@ -10,6 +10,8 @@ pub enum ApiError {
     Unauthorized,
     #[error("not found")]
     NotFound,
+    #[error("{0}")]
+    BadRequest(String),
     #[error("database error: {0}")]
     Database(#[from] DieselError),
     #[error("pool error: {0}")]
@@ -28,6 +30,7 @@ impl IntoResponse for ApiError {
         let (status, message) = match &self {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
+            ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message.clone()),
             ApiError::Database(DieselError::NotFound) => {
                 (StatusCode::NOT_FOUND, "not found".to_string())
             }

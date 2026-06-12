@@ -1,11 +1,15 @@
 mod app;
 mod auth;
 mod config;
+mod dto;
 mod error;
 mod models;
+mod repos;
 mod routes;
 mod schema;
+mod services;
 mod state;
+mod validation;
 
 use tracing_subscriber::EnvFilter;
 

@@ -1,5 +1,4 @@
 // @generated automatically by Diesel CLI.
-// Re-run `diesel print-schema` after DB shape changes.
 
 pub mod sql_types {
     #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
@@ -16,11 +15,17 @@ pub mod sql_types {
 }
 
 diesel::table! {
+    budget_tags (budget_id, tag_id) {
+        budget_id -> Uuid,
+        tag_id -> Uuid,
+    }
+}
+
+diesel::table! {
     use diesel::sql_types::*;
     use super::sql_types::CurrencyCode;
 
     budgets (id) {
-        id -> Int4,
         name -> Text,
         amount -> Int4,
         currency -> CurrencyCode,
@@ -28,15 +33,8 @@ diesel::table! {
         end_date -> Nullable<Date>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
-    use diesel::sql_types::*;
-
-    budget_tags (budget_id, tag_id) {
-        budget_id -> Int4,
-        tag_id -> Int4,
+        user_id -> Uuid,
+        id -> Uuid,
     }
 }
 
@@ -45,10 +43,17 @@ diesel::table! {
     use super::sql_types::CurrencyCode;
 
     exchange_rate_snapshots (id) {
-        id -> Int4,
         base_currency -> CurrencyCode,
         rates_json -> Jsonb,
         fetched_at -> Timestamptz,
+        id -> Uuid,
+    }
+}
+
+diesel::table! {
+    expense_tags (expense_id, tag_id) {
+        expense_id -> Uuid,
+        tag_id -> Uuid,
     }
 }
 
@@ -57,61 +62,62 @@ diesel::table! {
     use super::sql_types::CurrencyCode;
 
     expenses (id) {
-        id -> Int4,
         name -> Text,
         amount -> Int4,
-        currency -> CurrencyCode,
         date -> Date,
-        scheduled_date -> Nullable<Date>,
-        recurring_id -> Nullable<Int4>,
-        planned_expense_id -> Nullable<Int4>,
-        budget_id -> Nullable<Int4>,
+        created_at -> Timestamptz,
+        currency -> CurrencyCode,
         amount_overridden -> Bool,
         is_subscription -> Bool,
-        created_at -> Timestamptz,
+        scheduled_date -> Nullable<Date>,
+        user_id -> Uuid,
+        id -> Uuid,
+        recurring_id -> Nullable<Uuid>,
+        planned_expense_id -> Nullable<Uuid>,
+        budget_id -> Nullable<Uuid>,
     }
 }
 
 diesel::table! {
     use diesel::sql_types::*;
-
-    expense_tags (expense_id, tag_id) {
-        expense_id -> Int4,
-        tag_id -> Int4,
-    }
-}
-
-diesel::table! {
-    use diesel::sql_types::*;
-    use super::sql_types::CurrencyCode;
     use super::sql_types::IncomeSource;
+    use super::sql_types::CurrencyCode;
 
     income (id) {
-        id -> Int4,
         name -> Text,
         amount -> Int4,
-        currency -> CurrencyCode,
         source -> IncomeSource,
         date -> Date,
-        schedule_id -> Nullable<Int4>,
         created_at -> Timestamptz,
+        currency -> CurrencyCode,
+        user_id -> Uuid,
+        id -> Uuid,
+        schedule_id -> Nullable<Uuid>,
     }
 }
 
 diesel::table! {
     use diesel::sql_types::*;
-    use super::sql_types::CurrencyCode;
     use super::sql_types::PayFrequency;
+    use super::sql_types::CurrencyCode;
 
     income_pay_schedules (id) {
-        id -> Int4,
         name -> Text,
         anchor_date -> Date,
         frequency -> PayFrequency,
-        amount -> Int4,
-        currency -> CurrencyCode,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        amount -> Int4,
+        currency -> CurrencyCode,
+        user_id -> Uuid,
+        id -> Uuid,
+    }
+}
+
+diesel::table! {
+    planned_expense_tags (planned_expense_id, tag_id) {
+        planned_expense_id -> Uuid,
+        tag_id -> Uuid,
     }
 }
 
@@ -120,50 +126,41 @@ diesel::table! {
     use super::sql_types::CurrencyCode;
 
     planned_expenses (id) {
-        id -> Int4,
         name -> Text,
         date -> Date,
         amount -> Int4,
         currency -> CurrencyCode,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        user_id -> Uuid,
+        id -> Uuid,
+    }
+}
+
+diesel::table! {
+    recurring_expense_tags (recurring_expense_id, tag_id) {
+        recurring_expense_id -> Uuid,
+        tag_id -> Uuid,
     }
 }
 
 diesel::table! {
     use diesel::sql_types::*;
-
-    planned_expense_tags (planned_expense_id, tag_id) {
-        planned_expense_id -> Int4,
-        tag_id -> Int4,
-    }
-}
-
-diesel::table! {
-    use diesel::sql_types::*;
-    use super::sql_types::CurrencyCode;
     use super::sql_types::PayFrequency;
+    use super::sql_types::CurrencyCode;
 
     recurring_expenses (id) {
-        id -> Int4,
         name -> Text,
         anchor_date -> Date,
         frequency -> PayFrequency,
         amount -> Int4,
         currency -> CurrencyCode,
-        is_subscription -> Bool,
-        last_payment_date -> Nullable<Date>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
-    use diesel::sql_types::*;
-
-    recurring_expense_tags (recurring_expense_id, tag_id) {
-        recurring_expense_id -> Int4,
-        tag_id -> Int4,
+        is_subscription -> Bool,
+        last_payment_date -> Nullable<Date>,
+        user_id -> Uuid,
+        id -> Uuid,
     }
 }
 
@@ -172,23 +169,23 @@ diesel::table! {
     use super::sql_types::CurrencyCode;
 
     savings (id) {
-        id -> Int4,
         name -> Text,
         amount -> Int4,
-        currency -> CurrencyCode,
         note -> Nullable<Text>,
         date -> Date,
         created_at -> Timestamptz,
+        currency -> CurrencyCode,
+        user_id -> Uuid,
+        id -> Uuid,
     }
 }
 
 diesel::table! {
-    use diesel::sql_types::*;
-
     tags (id) {
-        id -> Int4,
         name -> Text,
         created_at -> Timestamptz,
+        user_id -> Uuid,
+        id -> Uuid,
     }
 }
 
@@ -196,29 +193,46 @@ diesel::table! {
     use diesel::sql_types::*;
     use super::sql_types::CurrencyCode;
 
-    user_settings (id) {
-        id -> Int4,
+    user_settings (user_id) {
         display_currency -> CurrencyCode,
-        primary_schedule_id -> Nullable<Int4>,
+        updated_at -> Timestamptz,
         projection_initial_free_money -> Int4,
         projection_start_date -> Nullable<Date>,
-        updated_at -> Timestamptz,
+        user_id -> Uuid,
+        primary_schedule_id -> Nullable<Uuid>,
+    }
+}
+
+diesel::table! {
+    users (id) {
+        id -> Uuid,
+        email -> Nullable<Text>,
+        created_at -> Timestamptz,
     }
 }
 
 diesel::joinable!(budget_tags -> budgets (budget_id));
 diesel::joinable!(budget_tags -> tags (tag_id));
+diesel::joinable!(budgets -> users (user_id));
 diesel::joinable!(expense_tags -> expenses (expense_id));
 diesel::joinable!(expense_tags -> tags (tag_id));
 diesel::joinable!(expenses -> budgets (budget_id));
 diesel::joinable!(expenses -> planned_expenses (planned_expense_id));
 diesel::joinable!(expenses -> recurring_expenses (recurring_id));
+diesel::joinable!(expenses -> users (user_id));
 diesel::joinable!(income -> income_pay_schedules (schedule_id));
+diesel::joinable!(income -> users (user_id));
+diesel::joinable!(income_pay_schedules -> users (user_id));
 diesel::joinable!(planned_expense_tags -> planned_expenses (planned_expense_id));
 diesel::joinable!(planned_expense_tags -> tags (tag_id));
+diesel::joinable!(planned_expenses -> users (user_id));
 diesel::joinable!(recurring_expense_tags -> recurring_expenses (recurring_expense_id));
 diesel::joinable!(recurring_expense_tags -> tags (tag_id));
+diesel::joinable!(recurring_expenses -> users (user_id));
+diesel::joinable!(savings -> users (user_id));
+diesel::joinable!(tags -> users (user_id));
 diesel::joinable!(user_settings -> income_pay_schedules (primary_schedule_id));
+diesel::joinable!(user_settings -> users (user_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     budget_tags,
@@ -235,4 +249,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     savings,
     tags,
     user_settings,
+    users,
 );

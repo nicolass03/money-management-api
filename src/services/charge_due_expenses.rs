@@ -1,0 +1,87 @@
+use chrono::Utc;
+use diesel_async::AsyncConnection;
+use uuid::Uuid;
+
+use crate::error::ApiError;
+use crate::repos::{expenses as expenses_repo, settings as settings_repo, tags as tags_repo};
+use crate::services::currency::convert_amount;
+use crate::services::exchange_rates::get_exchange_rates;
+use crate::services::pay_periods::{get_pay_dates_in_range, schedule_from_recurring};
+use crate::state::DbPool;
+
+pub async fn charge_due_expenses_for_date(
+    pool: &DbPool,
+    user_id: Uuid,
+    date: &str,
+) -> Result<i32, ApiError> {
+    let rates = get_exchange_rates(pool, false).await?;
+    let settings = settings_repo::get_user_settings(pool, user_id).await?;
+    let recurring_list = crate::repos::recurring_expenses::list_all(pool, user_id).await?;
+    let mut materialized_ids =
+        expenses_repo::get_materialized_recurring_ids_for_due_date(pool, user_id, date).await?;
+
+    let display_currency = settings.display_currency;
+    let now = Utc::now();
+    let due_date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| ApiError::BadRequest("invalid date".into()))?;
+    let mut created = 0;
+
+    for recurring in recurring_list {
+        if let Some(last) = recurring.last_payment_date {
+            let last_s = last.format("%Y-%m-%d").to_string();
+            if date > last_s.as_str() {
+                continue;
+            }
+        }
+
+        let schedule = schedule_from_recurring(&recurring);
+        let due_dates = get_pay_dates_in_range(&schedule, date, date);
+        if due_dates.is_empty() || materialized_ids.contains(&recurring.id) {
+            continue;
+        }
+
+        let (amount, currency) = if recurring.currency != display_currency {
+            (
+                convert_amount(
+                    recurring.amount,
+                    recurring.currency,
+                    display_currency,
+                    &rates,
+                ),
+                display_currency,
+            )
+        } else {
+            (recurring.amount, recurring.currency)
+        };
+
+        let mut conn = pool.get().await?;
+        conn.transaction(|conn| {
+            Box::pin(async move {
+                let expense = expenses_repo::insert_expense(
+                    conn,
+                    user_id,
+                    &recurring.name,
+                    amount,
+                    currency,
+                    due_date,
+                    None,
+                    Some(recurring.id),
+                    None,
+                    None,
+                    false,
+                    recurring.is_subscription,
+                    now,
+                )
+                .await?;
+                tags_repo::copy_recurring_tags_to_expense(conn, recurring.id, expense.id).await?;
+                Ok::<_, diesel::result::Error>(expense)
+            })
+        })
+        .await?;
+
+        materialized_ids.insert(recurring.id);
+        created += 1;
+    }
+
+    Ok(created)
+}

@@ -2,7 +2,7 @@
 
 Rust HTTP API for the money-management app. Built with **Axum**, **Tokio**, **Tower** middleware, **Diesel** (async), and **Supabase JWT** auth.
 
-The Next.js frontend will call this API instead of querying Postgres directly via Drizzle.
+The Next.js frontend calls this API for all business logic and database access. Supabase Auth is used only in the UI for login and JWT issuance.
 
 ## Prerequisites
 
@@ -20,19 +20,32 @@ The Next.js frontend will call this API instead of querying Postgres directly vi
 cp .env.example .env
 ```
 
-Fill in `.env` using the same Supabase values as the Next.js app, plus `SUPABASE_JWT_SECRET` from **Supabase Dashboard → Settings → API → JWT Secret**.
+Fill in `.env`:
+
+| Variable | Purpose |
+|----------|---------|
+| `DATABASE_URL` | Supabase Postgres connection string |
+| `SUPABASE_URL` | Supabase project URL (fetches public JWKS keys for ES256 access tokens) |
+| `CORS_ORIGIN` | Comma-separated allowed origins (default `http://localhost:3000`) |
+| `CRON_SECRET` | Bearer token for `/api/v1/cron/daily-expenses` |
 
 ## Database schema
 
-The live Supabase database is already migrated via Drizzle in the `money-management` repo. This API does not run migrations in the scaffold phase.
+Migrations live in `migrations/`. `src/schema.rs` is generated from the live Postgres schema.
 
-`src/schema.rs` was authored to match the current Drizzle schema. After future DB shape changes, re-introspect:
+**Multi-user model:** `users.id` matches Supabase Auth `sub`. All user-owned tables include `user_id`; API repos scope queries by the authenticated user. `exchange_rate_snapshots` stays global.
+
+**Run migrations** (use session-mode pooler port `5432`, not transaction pooler `6543`):
 
 ```bash
+export DATABASE_URL="${DATABASE_URL//:6543/:5432}"
+diesel migration run
 diesel print-schema > src/schema.rs
 ```
 
 Then adjust `src/models.rs` if new enums or types were added.
+
+Entity primary keys and foreign keys are **UUID**. JSON API responses serialize IDs as strings.
 
 ## Run
 
@@ -44,31 +57,41 @@ The server listens on `HOST:PORT` (default `0.0.0.0:8080`).
 
 ## Endpoints
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| `GET` | `/health` | No | `{ "status": "ok" }` |
-| `GET` | `/api/v1/settings` | Bearer JWT | Singleton `user_settings` row |
+All `/api/v1/*` routes require `Authorization: Bearer <supabase_access_token>` except the cron route.
 
-### Example
-
-```bash
-curl http://localhost:8080/health
-
-# Obtain a Supabase access token, then:
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/settings
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `GET/PATCH` | `/api/v1/settings` | User preferences |
+| `GET` | `/api/v1/money-context` | Display currency + exchange rates |
+| `GET/POST` | `/api/v1/income-schedules` | Pay schedule CRUD |
+| `GET/PATCH/DELETE` | `/api/v1/income-schedules/:id` | |
+| `GET/POST` | `/api/v1/income` | Income entries |
+| `GET/PATCH/DELETE` | `/api/v1/income/:id` | |
+| `POST` | `/api/v1/income/sync-scheduled` | Re-sync all scheduled income |
+| `GET/POST` | `/api/v1/expenses` | Expense ledger |
+| `GET/PATCH/DELETE` | `/api/v1/expenses/:id` | |
+| `POST` | `/api/v1/expenses/early-pay` | Record early payment |
+| `GET/POST` | `/api/v1/recurring-expenses` | Recurring expense templates |
+| `GET/PATCH/DELETE` | `/api/v1/recurring-expenses/:id` | |
+| `GET/POST` | `/api/v1/planned-expenses` | Planned future expenses |
+| `GET/PATCH/DELETE` | `/api/v1/planned-expenses/:id` | |
+| `GET/POST` | `/api/v1/budgets` | Budget envelopes |
+| `GET/PATCH/DELETE` | `/api/v1/budgets/:id` | |
+| `GET/POST` | `/api/v1/budgets/:id/expenses` | Budget expense ledger |
+| `DELETE` | `/api/v1/budgets/:id/expenses/:expense_id` | |
+| `GET` | `/api/v1/savings` | Savings entries |
+| `GET` | `/api/v1/tags` | All tag names |
+| `GET` | `/api/v1/projections` | Computed cash-flow projection |
+| `POST` | `/api/v1/cron/daily-expenses` | Charge due recurring expenses (`CRON_SECRET`) |
 
 ## Middleware stack
-
-Applied via Tower `ServiceBuilder`:
 
 - Request ID (`X-Request-Id`)
 - CORS (`CORS_ORIGIN`)
 - Request timeout (`REQUEST_TIMEOUT_SECS`)
 - HTTP tracing
 - Response compression
-
-Auth (`Authorization: Bearer`) is applied only under `/api/v1/*`.
 
 ## Architecture
 

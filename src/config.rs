@@ -7,10 +7,10 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub database_url: String,
-    pub jwt_secret: String,
-    pub auth_user_email: String,
+    pub supabase_url: String,
     pub cors_origins: Vec<String>,
     pub request_timeout: Duration,
+    pub cron_secret: Option<String>,
 }
 
 impl Config {
@@ -22,8 +22,7 @@ impl Config {
             .map_err(|_| "PORT must be a valid u16".to_string())?;
 
         let database_url = required_env("DATABASE_URL")?;
-        let jwt_secret = required_env("SUPABASE_JWT_SECRET")?;
-        let auth_user_email = required_env("AUTH_USER_EMAIL")?.to_lowercase();
+        let supabase_url = required_env("SUPABASE_URL")?;
 
         let cors_origins = env::var("CORS_ORIGIN")
             .unwrap_or_else(|_| "http://localhost:3000".to_string())
@@ -38,14 +37,19 @@ impl Config {
             .parse::<u64>()
             .map_err(|_| "REQUEST_TIMEOUT_SECS must be a valid u64".to_string())?;
 
+        let cron_secret = env::var("CRON_SECRET")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
         Ok(Self {
             host,
             port,
             database_url,
-            jwt_secret,
-            auth_user_email,
+            supabase_url,
             cors_origins,
             request_timeout: Duration::from_secs(timeout_secs),
+            cron_secret,
         })
     }
 

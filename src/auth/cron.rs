@@ -5,31 +5,26 @@ use axum::middleware::Next;
 use axum::response::Response;
 
 use crate::error::ApiError;
-use crate::repos::users;
 use crate::state::AppState;
 
-pub async fn require_auth(
+pub async fn require_cron_secret(
     State(state): State<AppState>,
-    mut request: Request<Body>,
+    request: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
+    let secret = state
+        .cron_secret
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or(ApiError::Unauthorized)?;
+
     let token = request
         .headers()
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| value == &format!("Bearer {secret}"))
         .ok_or(ApiError::Unauthorized)?;
 
-    let user = state
-        .jwt_validator
-        .validate(token)
-        .await
-        .map_err(|()| ApiError::Unauthorized)?;
-
-    users::ensure_user_exists(&state.db_pool, user.sub, &user.email).await?;
-
-    request.extensions_mut().insert(user);
+    let _ = token;
     Ok(next.run(request).await)
 }

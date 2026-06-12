@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
-diesel = { version = "2.2", features = ["postgres", "chrono", "serde_json", "64-column-tables"] }
+diesel = { version = "2.2", features = ["postgres", "chrono", "serde_json", "64-column-tables", "uuid"] }
 diesel-derive-enum = { version = "2", features = ["postgres"] }
 diesel-async = { version = "0.6", features = ["postgres", "bb8"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -25,3 +25,4 @@ tower-http = { version = "0.6", features = ["compression-full", "cors", "request
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json"] }
