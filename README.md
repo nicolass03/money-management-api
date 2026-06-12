@@ -108,6 +108,30 @@ All `/api/v1/*` routes require `Authorization: Bearer <supabase_access_token>`.
 - HTTP tracing
 - Response compression
 
+## Deploy to Railway
+
+This API runs as an always-on web service — no serverless adapter needed. The repo ships a `Dockerfile` and `railway.toml`.
+
+1. Create a Railway project and connect this repo (or run `railway init` + `railway up` locally).
+2. Set service variables in the Railway dashboard:
+
+   | Variable | Value |
+   |----------|-------|
+   | `DATABASE_URL` | Supabase Postgres connection string (transaction pooler `:6543` is fine) |
+   | `SUPABASE_URL` | Supabase project URL |
+   | `CORS_ORIGIN` | Your deployed Next.js URL (e.g. `https://your-app.vercel.app`) |
+   | `DAILY_EXPENSES_HOUR` | Hour in **UTC** (Railway containers use UTC) |
+
+3. Under **Networking → Generate Domain** to get a public URL.
+4. Point the Next.js app’s `API_URL` at that domain (no trailing slash).
+5. Run DB migrations from your machine before or after first deploy — they are **not** run automatically:
+
+   ```bash
+   ./scripts/migrate.sh
+   ```
+
+Railway injects `PORT`; the server binds `0.0.0.0:$PORT` by default. Health checks use `GET /health`.
+
 ## Architecture
 
 ```

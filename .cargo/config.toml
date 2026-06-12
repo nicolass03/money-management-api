@@ -1,6 +1,6 @@
-[env]
-PQ_LIB_DIR = { value = "/opt/homebrew/opt/libpq/lib", force = false }
-PQ_INCLUDE_DIR = { value = "/opt/homebrew/opt/libpq/include", force = false }
+# macOS-only: keep global [env]/[build] rustflags out of here so Linux Docker/Railway builds work.
+[target.x86_64-apple-darwin]
+rustflags = ["-L", "/opt/homebrew/opt/libpq/lib"]
 
-[build]
+[target.aarch64-apple-darwin]
 rustflags = ["-L", "/opt/homebrew/opt/libpq/lib"]
