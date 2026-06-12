@@ -104,7 +104,7 @@ All `/api/v1/*` routes require `Authorization: Bearer <supabase_access_token>`.
 - CORS (`CORS_ORIGIN`)
 - Request timeout (`REQUEST_TIMEOUT_SECS`)
 - Request body limit (256 KB)
-- Per-IP rate limiting on `/api/v1` (30 req/s, burst 60)
+- Per-IP rate limiting on `/api/v1` (100 req/s, burst 200)
 - HTTP tracing
 - Response compression
 

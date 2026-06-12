@@ -42,8 +42,8 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
 
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(30)
-            .burst_size(60)
+            .per_second(100)
+            .burst_size(200)
             .finish()
             .expect("valid governor config"),
     );
