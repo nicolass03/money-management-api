@@ -28,7 +28,9 @@ pub async fn require_auth(
     let user = match state.jwt_validator.validate(token).await {
         Ok(user) => user,
         Err(()) => {
-            let _ = state.auth_failure_limiter.check_key(&peer_addr.ip());
+            if state.rate_limit_enabled {
+                let _ = state.auth_failure_limiter.check_key(&peer_addr.ip());
+            }
             return Err(ApiError::Unauthorized);
         }
     };

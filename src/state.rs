@@ -19,6 +19,7 @@ pub struct AppState {
     pub jwt_validator: JwtValidator,
     pub force_refresh_limiter: Arc<UserRateLimiter>,
     pub auth_failure_limiter: Arc<IpRateLimiter>,
+    pub rate_limit_enabled: bool,
 }
 
 impl AppState {
@@ -51,6 +52,7 @@ impl AppState {
             jwt_validator,
             force_refresh_limiter: force_refresh_limiter(),
             auth_failure_limiter: auth_failure_limiter(),
+            rate_limit_enabled: config.rate_limit_enabled,
         })
     }
 }

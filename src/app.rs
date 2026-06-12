@@ -40,14 +40,6 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
                 .collect::<Vec<_>>(),
         );
 
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(100)
-            .burst_size(200)
-            .finish()
-            .expect("valid governor config"),
-    );
-
     let common_layers = ServiceBuilder::new()
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())
@@ -134,8 +126,20 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
         .route("/savings", get(routes::savings::list_savings))
         .route("/tags", get(routes::tags::list_tags))
         .route("/projections", get(routes::projections::get_projections))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
-        .layer(GovernorLayer::new(governor_conf));
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let protected = if config.rate_limit_enabled {
+        let governor_conf = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(100)
+                .burst_size(200)
+                .finish()
+                .expect("valid governor config"),
+        );
+        protected.layer(GovernorLayer::new(governor_conf))
+    } else {
+        protected
+    };
 
     Router::new()
         .route("/health", get(routes::health::health))

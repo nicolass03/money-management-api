@@ -17,6 +17,10 @@ export PQ_INCLUDE_DIR="$(brew --prefix libpq)/include"
 
 Do **not** put macOS-only `PQ_*` paths in global Cargo `[env]` — that breaks Linux Docker/Railway builds.
 
+## Rate limiting
+
+Per-IP limits on `/api/v1`, auth-failure tracking, and force-refresh throttling are **disabled in debug builds** (`cargo run`) and **enabled in release** (Docker/Railway). Override with `RATE_LIMIT_ENABLED=true` or `false`.
+
 ## Railway deployment
 
 The repo includes a multi-stage `Dockerfile` (cargo-chef + `libpq-dev` at build, `libpq5` at runtime) and `railway.toml` with `healthcheckPath = "/health"`.

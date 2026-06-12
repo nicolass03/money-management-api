@@ -13,7 +13,7 @@ pub async fn get_money_context(
     AuthenticatedUser(user): AuthenticatedUser,
     Query(query): Query<MoneyContextQuery>,
 ) -> Result<Json<MoneyContextResponse>, ApiError> {
-    if query.force_refresh {
+    if query.force_refresh && state.rate_limit_enabled {
         state
             .force_refresh_limiter
             .check_key(&user.sub)

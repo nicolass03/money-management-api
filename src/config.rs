@@ -12,6 +12,7 @@ pub struct Config {
     pub request_timeout: Duration,
     pub enable_internal_cron: bool,
     pub daily_expenses_hour: u8,
+    pub rate_limit_enabled: bool,
 }
 
 impl Config {
@@ -51,6 +52,10 @@ impl Config {
             return Err("DAILY_EXPENSES_HOUR must be 0-23".to_string());
         }
 
+        let rate_limit_enabled = env::var("RATE_LIMIT_ENABLED")
+            .map(|value| parse_bool(&value))
+            .unwrap_or(!cfg!(debug_assertions));
+
         Ok(Self {
             host,
             port,
@@ -60,6 +65,7 @@ impl Config {
             request_timeout: Duration::from_secs(timeout_secs),
             enable_internal_cron,
             daily_expenses_hour,
+            rate_limit_enabled,
         })
     }
 
