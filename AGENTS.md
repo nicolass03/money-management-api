@@ -21,6 +21,22 @@ Do **not** put macOS-only `PQ_*` paths in global Cargo `[env]` — that breaks L
 
 Per-IP limits on `/api/v1`, auth-failure tracking, and force-refresh throttling are **disabled in debug builds** (`cargo run`) and **enabled in release** (Docker/Railway). Override with `RATE_LIMIT_ENABLED=true` or `false`.
 
+## In-process caching
+
+Read-heavy endpoints use a revision-keyed **moka** cache (`src/cache/`). `user_settings.cache_revision` increments on every write (including daily cron materialization); cache keys are `(user_id, resource, revision)` so stale entries miss automatically.
+
+| Env | Default | Notes |
+|-----|---------|-------|
+| `CACHE_ENABLED` | `true` | Set `false` to bypass cache (debug) |
+| `CACHE_MAX_ENTRIES` | `10000` | Per-resource moka capacity |
+| `DB_POOL_MAX_SIZE` | `10` | bb8 pool max connections |
+
+**New write paths** must call `settings::bump_cache_revision` inside the same Postgres transaction and `state.cache.invalidate(InvalidationScope::…, user_id)` from the route handler (mirrors web `invalidation.ts`). Scopes live in `src/cache/invalidation.rs`.
+
+Exchange rates also use an in-memory layer (`src/services/fx_memory.rs`) atop the existing `exchange_rate_snapshots` table. Auth skips `ensure_user_exists` after first successful upsert per process (`AppState.known_users`).
+
+Multi-replica deploys: DB revision gives correctness without Redis; each replica holds independent memory until TTL/eviction.
+
 ## Railway deployment
 
 The repo includes a multi-stage `Dockerfile` (cargo-chef + `libpq-dev` at build, `libpq5` at runtime) and `railway.toml` with `healthcheckPath = "/health"`.

@@ -7,6 +7,7 @@ use crate::error::ApiError;
 use crate::models::ExchangeRateSnapshotRow;
 use crate::repos::exchange_rates as exchange_rates_repo;
 use crate::services::currency::ExchangeRates;
+use crate::services::fx_memory::{get_memory_rates, set_memory_rates};
 use crate::state::DbPool;
 use diesel_async::AsyncPgConnection;
 
@@ -72,12 +73,19 @@ pub async fn get_exchange_rates(
     pool: &DbPool,
     force_refresh: bool,
 ) -> Result<ExchangeRates, ApiError> {
+    if !force_refresh {
+        if let Some(cached) = get_memory_rates(false) {
+            return Ok(cached);
+        }
+    }
+
     let mut conn = pool.get().await?;
     let cached = exchange_rates_repo::get_latest_snapshot(&mut conn).await?;
 
     if let Some(ref snapshot) = cached {
         if let Some(parsed) = parse_snapshot_row(snapshot) {
             if !force_refresh && !is_rates_stale(&parsed.fetched_at) {
+                set_memory_rates(parsed.clone());
                 return Ok(parsed);
             }
         }
@@ -86,11 +94,13 @@ pub async fn get_exchange_rates(
     match fetch_exchange_rates().await {
         Ok(fresh) => {
             save_exchange_rates(&mut conn, &fresh).await?;
+            set_memory_rates(fresh.clone());
             Ok(fresh)
         }
         Err(error) => {
             if let Some(snapshot) = cached {
                 if let Some(parsed) = parse_snapshot_row(&snapshot) {
+                    set_memory_rates(parsed.clone());
                     return Ok(parsed);
                 }
             }

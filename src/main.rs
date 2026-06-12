@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod cache;
 mod config;
 mod jobs;
 mod dto;
@@ -49,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error
     })?;
 
-    jobs::daily_expenses::spawn_scheduler(state.db_pool.clone(), &config);
+    jobs::daily_expenses::spawn_scheduler(state.db_pool.clone(), state.cache.clone(), &config);
 
     let app = build_app(&config, state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

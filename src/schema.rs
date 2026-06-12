@@ -200,6 +200,7 @@ diesel::table! {
         projection_start_date -> Nullable<Date>,
         user_id -> Uuid,
         primary_schedule_id -> Nullable<Uuid>,
+        cache_revision -> Int8,
     }
 }
 

@@ -9,18 +9,25 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::models::{CurrencyCode, ExpenseRow};
-use crate::repos::{connection, tags};
+use crate::repos::{connection, settings, tags};
 use crate::schema::expenses;
 use crate::state::DbPool;
 use diesel_async::AsyncPgConnection;
 
 pub async fn list_all(pool: &DbPool, user_id: Uuid) -> Result<Vec<ExpenseRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
+    list_all_with_conn(&mut conn, user_id).await
+}
+
+pub async fn list_all_with_conn(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+) -> Result<Vec<ExpenseRow>, ApiError> {
     expenses::table
         .filter(expenses::user_id.eq(user_id))
         .order(expenses::date.desc())
         .select(ExpenseRow::as_select())
-        .load(&mut conn)
+        .load(conn)
         .await
         .map_err(ApiError::from)
 }
@@ -29,10 +36,17 @@ pub async fn list_with_tags(
     pool: &DbPool,
     user_id: Uuid,
 ) -> Result<Vec<(ExpenseRow, Vec<String>)>, ApiError> {
-    let rows = list_all(pool, user_id).await?;
     let mut conn = connection::user_connection(pool, user_id).await?;
+    list_with_tags_with_conn(&mut conn, user_id).await
+}
+
+pub async fn list_with_tags_with_conn(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+) -> Result<Vec<(ExpenseRow, Vec<String>)>, ApiError> {
+    let rows = list_all_with_conn(conn, user_id).await?;
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-    let tag_map = tags::tags_for_expenses(&mut conn, user_id, &ids).await?;
+    let tag_map = tags::tags_for_expenses(conn, user_id, &ids).await?;
     Ok(rows
         .into_iter()
         .map(|row| {
@@ -137,6 +151,7 @@ pub async fn create_manual(
             )
             .await?;
             tags::set_expense_tags(conn, user_id, expense.id, tag_names).await?;
+            settings::bump_cache_revision(conn, user_id).await?;
             Ok::<ExpenseRow, diesel::result::Error>(expense)
         })
     })
@@ -151,32 +166,50 @@ pub async fn update_amount(
     amount: i32,
 ) -> Result<Option<ExpenseRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
-    diesel::update(
-        expenses::table
-            .filter(expenses::user_id.eq(user_id))
-            .filter(expenses::id.eq(id)),
-    )
-    .set((
-        expenses::amount.eq(amount),
-        expenses::amount_overridden.eq(true),
-    ))
-    .returning(ExpenseRow::as_returning())
-    .get_result(&mut conn)
+    conn.transaction(|conn| {
+        Box::pin(async move {
+            let expense = diesel::update(
+                expenses::table
+                    .filter(expenses::user_id.eq(user_id))
+                    .filter(expenses::id.eq(id)),
+            )
+            .set((
+                expenses::amount.eq(amount),
+                expenses::amount_overridden.eq(true),
+            ))
+            .returning(ExpenseRow::as_returning())
+            .get_result(conn)
+            .await
+            .optional()?;
+            if expense.is_some() {
+                settings::bump_cache_revision(conn, user_id).await?;
+            }
+            Ok::<Option<ExpenseRow>, diesel::result::Error>(expense)
+        })
+    })
     .await
-    .optional()
     .map_err(ApiError::from)
 }
 
 pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
-    diesel::delete(
-        expenses::table
-            .filter(expenses::user_id.eq(user_id))
-            .filter(expenses::id.eq(id)),
-    )
-    .execute(&mut conn)
-    .await?;
-    Ok(())
+    conn.transaction(|conn| {
+        Box::pin(async move {
+            let deleted = diesel::delete(
+                expenses::table
+                    .filter(expenses::user_id.eq(user_id))
+                    .filter(expenses::id.eq(id)),
+            )
+            .execute(conn)
+            .await?;
+            if deleted > 0 {
+                settings::bump_cache_revision(conn, user_id).await?;
+            }
+            Ok::<(), diesel::result::Error>(())
+        })
+    })
+    .await
+    .map_err(ApiError::from)
 }
 
 pub async fn find_by_recurring_and_due_date(
@@ -281,6 +314,7 @@ pub async fn create_early_paid(
             } else if let Some(planned_id) = planned_expense_id {
                 tags::copy_planned_tags_to_expense(conn, planned_id, expense.id).await?;
             }
+            settings::bump_cache_revision(conn, user_id).await?;
             Ok::<ExpenseRow, diesel::result::Error>(expense)
         })
     })

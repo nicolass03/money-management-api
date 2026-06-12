@@ -13,6 +13,9 @@ pub struct Config {
     pub enable_internal_cron: bool,
     pub daily_expenses_hour: u8,
     pub rate_limit_enabled: bool,
+    pub cache_enabled: bool,
+    pub cache_max_entries: u64,
+    pub db_pool_max_size: u32,
 }
 
 impl Config {
@@ -56,6 +59,20 @@ impl Config {
             .map(|value| parse_bool(&value))
             .unwrap_or(!cfg!(debug_assertions));
 
+        let cache_enabled = env::var("CACHE_ENABLED")
+            .map(|value| parse_bool(&value))
+            .unwrap_or(true);
+
+        let cache_max_entries = env::var("CACHE_MAX_ENTRIES")
+            .unwrap_or_else(|_| "10000".to_string())
+            .parse::<u64>()
+            .map_err(|_| "CACHE_MAX_ENTRIES must be a valid u64".to_string())?;
+
+        let db_pool_max_size = env::var("DB_POOL_MAX_SIZE")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse::<u32>()
+            .map_err(|_| "DB_POOL_MAX_SIZE must be a valid u32".to_string())?;
+
         Ok(Self {
             host,
             port,
@@ -66,6 +83,9 @@ impl Config {
             enable_internal_cron,
             daily_expenses_hour,
             rate_limit_enabled,
+            cache_enabled,
+            cache_max_entries,
+            db_pool_max_size,
         })
     }
 

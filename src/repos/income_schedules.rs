@@ -30,11 +30,19 @@ pub async fn find_by_id(
     id: Uuid,
 ) -> Result<Option<IncomePayScheduleRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
+    find_by_id_with_conn(&mut conn, user_id, id).await
+}
+
+pub async fn find_by_id_with_conn(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+    id: Uuid,
+) -> Result<Option<IncomePayScheduleRow>, ApiError> {
     income_pay_schedules::table
         .filter(income_pay_schedules::user_id.eq(user_id))
         .filter(income_pay_schedules::id.eq(id))
         .select(IncomePayScheduleRow::as_select())
-        .first(&mut conn)
+        .first(conn)
         .await
         .optional()
         .map_err(ApiError::from)
@@ -127,6 +135,7 @@ pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiErr
             )
             .execute(conn)
             .await?;
+            settings::bump_cache_revision(conn, user_id).await?;
             Ok::<(), diesel::result::Error>(())
         })
     })

@@ -21,7 +21,7 @@ pub struct MoneyContextQuery {
     pub force_refresh: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MoneyContextResponse {
     pub display_currency: CurrencyCode,
@@ -171,7 +171,7 @@ pub struct CreateBudgetExpenseRequest {
     pub date: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectionsResponse {
     pub rows: Vec<ProjectionRow>,

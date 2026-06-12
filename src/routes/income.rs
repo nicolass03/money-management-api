@@ -3,6 +3,7 @@ use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
+use crate::cache::InvalidationScope;
 use crate::dto::{CreateIncomeRequest, UpdateIncomeRequest};
 use crate::error::ApiError;
 use crate::models::{IncomeResponse, IncomeSource, is_manual_income};
@@ -30,7 +31,11 @@ pub async fn list_income(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Vec<IncomeResponse>>, ApiError> {
-    let rows = income_repo::list_all(&state.db_pool, user.sub).await?;
+    let settings = state.loader.user_settings(user.sub).await?;
+    let rows = state
+        .loader
+        .income_list(user.sub, settings.cache_revision)
+        .await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
@@ -51,6 +56,9 @@ pub async fn create_income(
         date,
     )
     .await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::IncomeChange, user.sub);
     Ok(Json(row.into()))
 }
 
@@ -93,6 +101,9 @@ pub async fn update_income(
     )
     .await?
     .ok_or(ApiError::NotFound)?;
+    state
+        .cache
+        .invalidate(InvalidationScope::IncomeChange, user.sub);
     Ok(Json(row.into()))
 }
 
@@ -110,6 +121,9 @@ pub async fn delete_income(
         ));
     }
     income_repo::delete(&state.db_pool, user.sub, id).await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::IncomeChange, user.sub);
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -118,5 +132,8 @@ pub async fn sync_scheduled(
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     sync_all_scheduled_income(&state.db_pool, user.sub).await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::IncomeChange, user.sub);
     Ok(Json(serde_json::json!({ "success": true })))
 }

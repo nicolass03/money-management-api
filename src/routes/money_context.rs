@@ -2,10 +2,9 @@ use axum::extract::{Query, State};
 use axum::Json;
 
 use crate::auth::extractor::AuthenticatedUser;
+use crate::cache::InvalidationScope;
 use crate::dto::{MoneyContextQuery, MoneyContextResponse};
 use crate::error::ApiError;
-use crate::repos::settings as settings_repo;
-use crate::services::exchange_rates::get_exchange_rates;
 use crate::state::AppState;
 
 pub async fn get_money_context(
@@ -20,10 +19,17 @@ pub async fn get_money_context(
             .map_err(|_| ApiError::BadRequest("rate limit exceeded".into()))?;
     }
 
-    let settings = settings_repo::get_user_settings(&state.db_pool, user.sub).await?;
-    let rates = get_exchange_rates(&state.db_pool, query.force_refresh).await?;
-    Ok(Json(MoneyContextResponse {
-        display_currency: settings.display_currency,
-        rates,
-    }))
+    let settings = state.loader.user_settings(user.sub).await?;
+    let response = state
+        .loader
+        .money_context(user.sub, settings.cache_revision, query.force_refresh)
+        .await?;
+
+    if query.force_refresh {
+        state
+            .cache
+            .invalidate(InvalidationScope::MoneyContextRefresh, user.sub);
+    }
+
+    Ok(Json(response))
 }

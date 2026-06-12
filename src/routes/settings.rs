@@ -2,6 +2,7 @@ use axum::extract::State;
 use axum::Json;
 
 use crate::auth::extractor::AuthenticatedUser;
+use crate::cache::InvalidationScope;
 use crate::dto::PatchSettingsRequest;
 use crate::error::ApiError;
 use crate::models::UserSettingsResponse;
@@ -15,7 +16,7 @@ pub async fn get_settings(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<UserSettingsResponse>, ApiError> {
-    let row = settings_repo::get_user_settings(&state.db_pool, user.sub).await?;
+    let row = state.loader.user_settings(user.sub).await?;
     Ok(Json(row.into()))
 }
 
@@ -61,6 +62,10 @@ pub async fn patch_settings(
         projection_start_date,
     )
     .await?;
+
+    state
+        .cache
+        .invalidate(InvalidationScope::SettingsChange, user.sub);
 
     Ok(Json(row.into()))
 }

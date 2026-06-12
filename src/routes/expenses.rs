@@ -3,6 +3,7 @@ use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
+use crate::cache::InvalidationScope;
 use crate::dto::{CreateExpenseRequest, EarlyPayExpenseRequest, PatchExpenseRequest};
 use crate::error::ApiError;
 use crate::models::{expense_to_response, ExpenseResponse};
@@ -19,7 +20,11 @@ pub async fn list_expenses(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Vec<ExpenseResponse>>, ApiError> {
-    let rows = expenses_repo::list_with_tags(&state.db_pool, user.sub).await?;
+    let settings = state.loader.user_settings(user.sub).await?;
+    let rows = state
+        .loader
+        .expenses_with_tags(user.sub, settings.cache_revision)
+        .await?;
     Ok(Json(
         rows.into_iter()
             .map(|(row, tags)| expense_to_response(row, tags))
@@ -59,6 +64,9 @@ pub async fn create_expense(
         body.is_subscription,
     )
     .await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::ExpenseChange, user.sub);
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -94,6 +102,9 @@ pub async fn patch_expense(
     let (_, tags) = expenses_repo::find_with_tags(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    state
+        .cache
+        .invalidate(InvalidationScope::ExpenseChange, user.sub);
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -111,6 +122,9 @@ pub async fn delete_expense(
         ));
     }
     expenses_repo::delete(&state.db_pool, user.sub, id).await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::ExpenseChange, user.sub);
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -235,5 +249,8 @@ pub async fn early_pay_expense(
     let (_, tags) = expenses_repo::find_with_tags(&state.db_pool, user.sub, row.id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    state
+        .cache
+        .invalidate(InvalidationScope::ExpenseChange, user.sub);
     Ok(Json(expense_to_response(row, tags)))
 }

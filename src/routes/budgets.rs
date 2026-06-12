@@ -3,6 +3,7 @@ use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
+use crate::cache::InvalidationScope;
 use crate::dto::{CreateBudgetExpenseRequest, CreateBudgetRequest, UpdateBudgetRequest};
 use crate::error::ApiError;
 use crate::models::{budget_to_response, expense_to_response, BudgetResponse, ExpenseResponse};
@@ -69,7 +70,11 @@ pub async fn list_budgets(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Vec<BudgetResponse>>, ApiError> {
-    let rows = budgets_repo::list_with_tags_and_spent(&state.db_pool, user.sub).await?;
+    let settings = state.loader.user_settings(user.sub).await?;
+    let rows = state
+        .loader
+        .budgets_with_tags_and_spent(user.sub, settings.cache_revision)
+        .await?;
     Ok(Json(
         rows.into_iter()
             .map(|(row, tags, spent)| budget_to_response(row, tags, spent))
@@ -94,6 +99,9 @@ pub async fn create_budget(
         &tags,
     )
     .await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::BudgetChange, user.sub);
     Ok(Json(budget_to_response(row, tags, 0)))
 }
 
@@ -140,6 +148,9 @@ pub async fn update_budget(
         .await?
         .map(|(_, _, spent)| spent)
         .unwrap_or(0);
+    state
+        .cache
+        .invalidate(InvalidationScope::BudgetChange, user.sub);
     Ok(Json(budget_to_response(row, tags, spent)))
 }
 
@@ -149,6 +160,9 @@ pub async fn delete_budget(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     budgets_repo::delete(&state.db_pool, user.sub, id).await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::BudgetChange, user.sub);
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -229,6 +243,9 @@ pub async fn create_budget_expense(
     let (_, tags) = expenses_repo::find_with_tags(&state.db_pool, user.sub, row.id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    state
+        .cache
+        .invalidate(InvalidationScope::BudgetChange, user.sub);
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -245,5 +262,8 @@ pub async fn delete_budget_expense(
     if !deleted {
         return Err(ApiError::NotFound);
     }
+    state
+        .cache
+        .invalidate(InvalidationScope::BudgetChange, user.sub);
     Ok(Json(serde_json::json!({ "success": true })))
 }

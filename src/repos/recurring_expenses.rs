@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::models::{CurrencyCode, PayFrequency, RecurringExpenseRow};
-use crate::repos::{connection, tags};
+use crate::repos::{connection, settings, tags};
 use crate::schema::{expenses, recurring_expenses};
 use crate::state::DbPool;
 
@@ -14,11 +14,18 @@ pub async fn list_all(
     user_id: Uuid,
 ) -> Result<Vec<RecurringExpenseRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
+    list_all_with_conn(&mut conn, user_id).await
+}
+
+pub async fn list_all_with_conn(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+) -> Result<Vec<RecurringExpenseRow>, ApiError> {
     recurring_expenses::table
         .filter(recurring_expenses::user_id.eq(user_id))
         .order(recurring_expenses::name.asc())
         .select(RecurringExpenseRow::as_select())
-        .load(&mut conn)
+        .load(conn)
         .await
         .map_err(ApiError::from)
 }
@@ -27,10 +34,17 @@ pub async fn list_with_tags(
     pool: &DbPool,
     user_id: Uuid,
 ) -> Result<Vec<(RecurringExpenseRow, Vec<String>)>, ApiError> {
-    let rows = list_all(pool, user_id).await?;
     let mut conn = connection::user_connection(pool, user_id).await?;
+    list_with_tags_with_conn(&mut conn, user_id).await
+}
+
+pub async fn list_with_tags_with_conn(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+) -> Result<Vec<(RecurringExpenseRow, Vec<String>)>, ApiError> {
+    let rows = list_all_with_conn(conn, user_id).await?;
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-    let tag_map = tags::tags_for_recurring(&mut conn, user_id, &ids).await?;
+    let tag_map = tags::tags_for_recurring(conn, user_id, &ids).await?;
     Ok(rows
         .into_iter()
         .map(|row| {
@@ -102,6 +116,7 @@ pub async fn create(
                 .get_result(conn)
                 .await?;
             tags::set_recurring_expense_tags(conn, user_id, recurring.id, tag_names).await?;
+            settings::bump_cache_revision(conn, user_id).await?;
             Ok::<RecurringExpenseRow, diesel::result::Error>(recurring)
         })
     })
@@ -148,6 +163,9 @@ pub async fn update(
             if let Some(ref row) = recurring {
                 tags::set_recurring_expense_tags(conn, user_id, row.id, tag_names).await?;
             }
+            if recurring.is_some() {
+                settings::bump_cache_revision(conn, user_id).await?;
+            }
             Ok::<Option<RecurringExpenseRow>, diesel::result::Error>(recurring)
         })
     })
@@ -173,6 +191,7 @@ pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiErr
             )
             .execute(conn)
             .await?;
+            settings::bump_cache_revision(conn, user_id).await?;
             Ok::<(), diesel::result::Error>(())
         })
     })

@@ -3,6 +3,7 @@ use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
+use crate::cache::InvalidationScope;
 use crate::dto::{CreateRecurringExpenseRequest, UpdateRecurringExpenseRequest};
 use crate::error::ApiError;
 use crate::models::{recurring_to_response, RecurringExpenseResponse};
@@ -66,7 +67,11 @@ pub async fn list_recurring(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Vec<RecurringExpenseResponse>>, ApiError> {
-    let rows = recurring_repo::list_with_tags(&state.db_pool, user.sub).await?;
+    let settings = state.loader.user_settings(user.sub).await?;
+    let rows = state
+        .loader
+        .recurring_with_tags(user.sub, settings.cache_revision)
+        .await?;
     Ok(Json(
         rows.into_iter()
             .map(|(row, tags)| recurring_to_response(row, tags))
@@ -94,6 +99,9 @@ pub async fn create_recurring(
         last_payment_date,
     )
     .await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::RecurringChange, user.sub);
     Ok(Json(recurring_to_response(row, tags)))
 }
 
@@ -141,6 +149,9 @@ pub async fn update_recurring(
     )
     .await?
     .ok_or(ApiError::NotFound)?;
+    state
+        .cache
+        .invalidate(InvalidationScope::RecurringChange, user.sub);
     Ok(Json(recurring_to_response(row, tags)))
 }
 
@@ -150,5 +161,8 @@ pub async fn delete_recurring(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     recurring_repo::delete(&state.db_pool, user.sub, id).await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::RecurringChange, user.sub);
     Ok(Json(serde_json::json!({ "success": true })))
 }

@@ -3,6 +3,7 @@ use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
+use crate::cache::InvalidationScope;
 use crate::dto::{CreatePlannedExpenseRequest, UpdatePlannedExpenseRequest};
 use crate::error::ApiError;
 use crate::models::{planned_to_response, PlannedExpenseResponse};
@@ -36,7 +37,11 @@ pub async fn list_planned(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Vec<PlannedExpenseResponse>>, ApiError> {
-    let rows = planned_repo::list_with_tags(&state.db_pool, user.sub).await?;
+    let settings = state.loader.user_settings(user.sub).await?;
+    let rows = state
+        .loader
+        .planned_with_tags(user.sub, settings.cache_revision)
+        .await?;
     Ok(Json(
         rows.into_iter()
             .map(|(row, tags)| planned_to_response(row, tags))
@@ -58,6 +63,9 @@ pub async fn create_planned(
         true,
     )?;
     let row = planned_repo::create(&state.db_pool, user.sub, &name, date, amount, currency, &tags).await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::PlannedChange, user.sub);
     Ok(Json(planned_to_response(row, tags)))
 }
 
@@ -89,6 +97,9 @@ pub async fn update_planned(
     let row = planned_repo::update(&state.db_pool, user.sub, id, &name, date, amount, currency, &tags)
         .await?
         .ok_or(ApiError::NotFound)?;
+    state
+        .cache
+        .invalidate(InvalidationScope::PlannedChange, user.sub);
     Ok(Json(planned_to_response(row, tags)))
 }
 
@@ -98,5 +109,8 @@ pub async fn delete_planned(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     planned_repo::delete(&state.db_pool, user.sub, id).await?;
+    state
+        .cache
+        .invalidate(InvalidationScope::PlannedChange, user.sub);
     Ok(Json(serde_json::json!({ "success": true })))
 }

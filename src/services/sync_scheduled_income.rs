@@ -5,7 +5,7 @@ use diesel_async::{AsyncConnection, RunQueryDsl};
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::repos::connection;
+use crate::repos::{connection, settings};
 use crate::models::{IncomePayScheduleRow, IncomeSource};
 use crate::schema::income;
 use crate::services::pay_periods::{get_pay_dates_in_range, schedule_from_income};
@@ -53,6 +53,7 @@ pub async fn sync_scheduled_income(
                 )
                 .execute(conn)
                 .await?;
+                settings::bump_cache_revision(conn, user_id).await?;
                 return Ok::<(), diesel::result::Error>(());
             }
 
@@ -99,6 +100,7 @@ pub async fn sync_scheduled_income(
             .execute(conn)
             .await?;
 
+            settings::bump_cache_revision(conn, user_id).await?;
             Ok::<(), diesel::result::Error>(())
         })
     })

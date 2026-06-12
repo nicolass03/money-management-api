@@ -35,7 +35,10 @@ pub async fn require_auth(
         }
     };
 
-    users::ensure_user_exists(&state.db_pool, user.sub, &user.email).await?;
+    if !state.known_users.contains(&user.sub) {
+        users::ensure_user_exists(&state.db_pool, user.sub, &user.email).await?;
+        state.known_users.insert(user.sub);
+    }
 
     request.extensions_mut().insert(user);
     Ok(next.run(request).await)

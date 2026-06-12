@@ -60,7 +60,7 @@ pub enum IncomeSource {
     Manual,
 }
 
-#[derive(Debug, Queryable, Selectable)]
+#[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = crate::schema::user_settings)]
 pub struct UserSettingsRow {
     pub user_id: Uuid,
@@ -69,6 +69,7 @@ pub struct UserSettingsRow {
     pub projection_initial_free_money: i32,
     pub projection_start_date: Option<NaiveDate>,
     pub updated_at: DateTime<Utc>,
+    pub cache_revision: i64,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -85,7 +86,7 @@ pub struct IncomePayScheduleRow {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Queryable, Selectable)]
+#[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = crate::schema::income)]
 pub struct IncomeRow {
     pub id: Uuid,
@@ -219,7 +220,7 @@ impl From<UserSettingsRow> for UserSettingsResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncomePayScheduleResponse {
     pub id: Uuid,

@@ -104,5 +104,10 @@ pub async fn charge_due_expenses_for_date(
         }
     }
 
+    if created > 0 {
+        let mut conn = connection::user_connection(pool, user_id).await?;
+        settings_repo::bump_cache_revision(&mut conn, user_id).await?;
+    }
+
     Ok(created)
 }
