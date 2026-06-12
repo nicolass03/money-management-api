@@ -1,0 +1,6 @@
+[env]
+PQ_LIB_DIR = { value = "/opt/homebrew/opt/libpq/lib", force = false }
+PQ_INCLUDE_DIR = { value = "/opt/homebrew/opt/libpq/include", force = false }
+
+[build]
+rustflags = ["-L", "/opt/homebrew/opt/libpq/lib"]
