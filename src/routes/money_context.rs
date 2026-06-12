@@ -13,6 +13,13 @@ pub async fn get_money_context(
     AuthenticatedUser(user): AuthenticatedUser,
     Query(query): Query<MoneyContextQuery>,
 ) -> Result<Json<MoneyContextResponse>, ApiError> {
+    if query.force_refresh {
+        state
+            .force_refresh_limiter
+            .check_key(&user.sub)
+            .map_err(|_| ApiError::BadRequest("rate limit exceeded".into()))?;
+    }
+
     let settings = settings_repo::get_user_settings(&state.db_pool, user.sub).await?;
     let rates = get_exchange_rates(&state.db_pool, query.force_refresh).await?;
     Ok(Json(MoneyContextResponse {

@@ -5,6 +5,7 @@ use diesel_async::{AsyncConnection, RunQueryDsl};
 use uuid::Uuid;
 
 use crate::error::ApiError;
+use crate::repos::connection;
 use crate::models::{IncomePayScheduleRow, IncomeSource};
 use crate::schema::income;
 use crate::services::pay_periods::{get_pay_dates_in_range, schedule_from_income};
@@ -38,7 +39,7 @@ pub async fn sync_scheduled_income(
     );
     let now = Utc::now();
 
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     conn.transaction(|conn| {
         Box::pin(async move {
             if pay_dates.is_empty() {

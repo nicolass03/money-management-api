@@ -9,13 +9,13 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::models::{CurrencyCode, ExpenseRow};
-use crate::repos::tags;
+use crate::repos::{connection, tags};
 use crate::schema::expenses;
 use crate::state::DbPool;
 use diesel_async::AsyncPgConnection;
 
 pub async fn list_all(pool: &DbPool, user_id: Uuid) -> Result<Vec<ExpenseRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     expenses::table
         .filter(expenses::user_id.eq(user_id))
         .order(expenses::date.desc())
@@ -30,7 +30,7 @@ pub async fn list_with_tags(
     user_id: Uuid,
 ) -> Result<Vec<(ExpenseRow, Vec<String>)>, ApiError> {
     let rows = list_all(pool, user_id).await?;
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let tag_map = tags::tags_for_expenses(&mut conn, user_id, &ids).await?;
     Ok(rows
@@ -47,7 +47,7 @@ pub async fn find_by_id(
     user_id: Uuid,
     id: Uuid,
 ) -> Result<Option<ExpenseRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::id.eq(id))
@@ -66,7 +66,7 @@ pub async fn find_with_tags(
     let Some(row) = find_by_id(pool, user_id, id).await? else {
         return Ok(None);
     };
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let tag_map = tags::tags_for_expenses(&mut conn, user_id, &[id]).await?;
     Ok(Some((row, tag_map.get(&id).cloned().unwrap_or_default())))
 }
@@ -116,7 +116,7 @@ pub async fn create_manual(
     tag_names: &[String],
     is_subscription: bool,
 ) -> Result<ExpenseRow, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
     conn.transaction(|conn| {
         Box::pin(async move {
@@ -150,7 +150,7 @@ pub async fn update_amount(
     id: Uuid,
     amount: i32,
 ) -> Result<Option<ExpenseRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     diesel::update(
         expenses::table
             .filter(expenses::user_id.eq(user_id))
@@ -168,7 +168,7 @@ pub async fn update_amount(
 }
 
 pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     diesel::delete(
         expenses::table
             .filter(expenses::user_id.eq(user_id))
@@ -185,7 +185,7 @@ pub async fn find_by_recurring_and_due_date(
     recurring_id: Uuid,
     due_date: NaiveDate,
 ) -> Result<Option<ExpenseRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::recurring_id.eq(recurring_id))
@@ -208,7 +208,7 @@ pub async fn find_by_planned_id(
     user_id: Uuid,
     planned_id: Uuid,
 ) -> Result<Option<ExpenseRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::planned_expense_id.eq(planned_id))
@@ -226,7 +226,7 @@ pub async fn get_materialized_recurring_ids_for_due_date(
 ) -> Result<HashSet<Uuid>, ApiError> {
     let due_date = NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .map_err(|_| ApiError::BadRequest("invalid date".into()))?;
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let rows: Vec<Option<Uuid>> = expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::recurring_id.is_not_null())
@@ -256,7 +256,7 @@ pub async fn create_early_paid(
     amount_overridden: bool,
     is_subscription: bool,
 ) -> Result<ExpenseRow, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
     conn.transaction(|conn| {
         Box::pin(async move {
@@ -293,7 +293,7 @@ pub async fn list_by_budget(
     user_id: Uuid,
     budget_id: Uuid,
 ) -> Result<Vec<(ExpenseRow, Vec<String>)>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let rows = expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::budget_id.eq(budget_id))
@@ -317,7 +317,7 @@ pub async fn count_by_budget(
     user_id: Uuid,
     budget_id: Uuid,
 ) -> Result<i64, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let count: i64 = expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::budget_id.eq(budget_id))

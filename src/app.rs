@@ -1,15 +1,19 @@
+use std::sync::Arc;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::routing::{delete, get, post};
 use axum::Router;
 use tower::ServiceBuilder;
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::GovernorLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
-use crate::auth::cron::require_cron_secret;
 use crate::auth::middleware::require_auth;
 use crate::config::Config;
 use crate::routes;
@@ -36,13 +40,22 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
                 .collect::<Vec<_>>(),
         );
 
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(30)
+            .burst_size(60)
+            .finish()
+            .expect("valid governor config"),
+    );
+
     let common_layers = ServiceBuilder::new()
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(cors)
         .layer(timeout_layer)
         .layer(TraceLayer::new_for_http())
-        .layer(CompressionLayer::new());
+        .layer(CompressionLayer::new())
+        .layer(RequestBodyLimitLayer::new(256 * 1024));
 
     let protected = Router::new()
         .route("/settings", get(routes::settings::get_settings).patch(routes::settings::patch_settings))
@@ -61,24 +74,24 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
             "/income",
             get(routes::income::list_income).post(routes::income::create_income),
         )
+        .route("/income/sync-scheduled", post(routes::income::sync_scheduled))
         .route(
             "/income/{id}",
             get(routes::income::get_income)
                 .patch(routes::income::update_income)
                 .delete(routes::income::delete_income),
         )
-        .route("/income/sync-scheduled", post(routes::income::sync_scheduled))
         .route(
             "/expenses",
             get(routes::expenses::list_expenses).post(routes::expenses::create_expense),
         )
+        .route("/expenses/early-pay", post(routes::expenses::early_pay_expense))
         .route(
             "/expenses/{id}",
             get(routes::expenses::get_expense)
                 .patch(routes::expenses::patch_expense)
                 .delete(routes::expenses::delete_expense),
         )
-        .route("/expenses/early-pay", post(routes::expenses::early_pay_expense))
         .route(
             "/recurring-expenses",
             get(routes::recurring_expenses::list_recurring)
@@ -121,15 +134,12 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
         .route("/savings", get(routes::savings::list_savings))
         .route("/tags", get(routes::tags::list_tags))
         .route("/projections", get(routes::projections::get_projections))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
-
-    let cron = Router::new()
-        .route("/cron/daily-expenses", post(routes::cron::daily_expenses))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_cron_secret));
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
+        .layer(GovernorLayer::new(governor_conf));
 
     Router::new()
         .route("/health", get(routes::health::health))
-        .nest("/api/v1", protected.merge(cron))
+        .nest("/api/v1", protected)
         .layer(common_layers)
         .with_state(state)
 }

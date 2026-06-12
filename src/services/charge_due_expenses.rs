@@ -1,13 +1,24 @@
 use chrono::Utc;
+use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel_async::AsyncConnection;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::repos::{expenses as expenses_repo, settings as settings_repo, tags as tags_repo};
+use crate::repos::{
+    connection, expenses as expenses_repo, settings as settings_repo, tags as tags_repo,
+};
 use crate::services::currency::convert_amount;
 use crate::services::exchange_rates::get_exchange_rates;
 use crate::services::pay_periods::{get_pay_dates_in_range, schedule_from_recurring};
 use crate::state::DbPool;
+
+fn is_recurring_due_unique_violation(error: &DieselError) -> bool {
+    matches!(
+        error,
+        DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, info)
+            if info.constraint_name().as_deref() == Some("expenses_recurring_due_unique")
+    )
+}
 
 pub async fn charge_due_expenses_for_date(
     pool: &DbPool,
@@ -54,33 +65,43 @@ pub async fn charge_due_expenses_for_date(
             (recurring.amount, recurring.currency)
         };
 
-        let mut conn = pool.get().await?;
-        conn.transaction(|conn| {
-            Box::pin(async move {
-                let expense = expenses_repo::insert_expense(
-                    conn,
-                    user_id,
-                    &recurring.name,
-                    amount,
-                    currency,
-                    due_date,
-                    None,
-                    Some(recurring.id),
-                    None,
-                    None,
-                    false,
-                    recurring.is_subscription,
-                    now,
-                )
-                .await?;
-                tags_repo::copy_recurring_tags_to_expense(conn, recurring.id, expense.id).await?;
-                Ok::<_, diesel::result::Error>(expense)
+        let mut conn = connection::user_connection(pool, user_id).await?;
+        let insert_result = conn
+            .transaction(|conn| {
+                Box::pin(async move {
+                    let expense = expenses_repo::insert_expense(
+                        conn,
+                        user_id,
+                        &recurring.name,
+                        amount,
+                        currency,
+                        due_date,
+                        None,
+                        Some(recurring.id),
+                        None,
+                        None,
+                        false,
+                        recurring.is_subscription,
+                        now,
+                    )
+                    .await?;
+                    tags_repo::copy_recurring_tags_to_expense(conn, recurring.id, expense.id)
+                        .await?;
+                    Ok::<_, diesel::result::Error>(expense)
+                })
             })
-        })
-        .await?;
+            .await;
 
-        materialized_ids.insert(recurring.id);
-        created += 1;
+        match insert_result {
+            Ok(_) => {
+                materialized_ids.insert(recurring.id);
+                created += 1;
+            }
+            Err(error) if is_recurring_due_unique_violation(&error) => {
+                materialized_ids.insert(recurring.id);
+            }
+            Err(error) => return Err(ApiError::from(error)),
+        }
     }
 
     Ok(created)

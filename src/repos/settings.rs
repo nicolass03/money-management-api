@@ -5,12 +5,13 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::models::{CurrencyCode, UserSettingsRow};
+use crate::repos::connection;
 use crate::schema::user_settings;
 use crate::state::DbPool;
 use diesel_async::AsyncPgConnection;
 
 pub async fn get_user_settings(pool: &DbPool, user_id: Uuid) -> Result<UserSettingsRow, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     if let Ok(row) = user_settings::table
         .find(user_id)
         .select(UserSettingsRow::as_select())
@@ -50,7 +51,7 @@ pub async fn update_user_settings(
     projection_start_date: Option<Option<chrono::NaiveDate>>,
 ) -> Result<UserSettingsRow, ApiError> {
     get_user_settings(pool, user_id).await?;
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
 
     if let Some(currency) = display_currency {

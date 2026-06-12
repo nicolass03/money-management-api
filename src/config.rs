@@ -10,7 +10,8 @@ pub struct Config {
     pub supabase_url: String,
     pub cors_origins: Vec<String>,
     pub request_timeout: Duration,
-    pub cron_secret: Option<String>,
+    pub enable_internal_cron: bool,
+    pub daily_expenses_hour: u8,
 }
 
 impl Config {
@@ -37,10 +38,18 @@ impl Config {
             .parse::<u64>()
             .map_err(|_| "REQUEST_TIMEOUT_SECS must be a valid u64".to_string())?;
 
-        let cron_secret = env::var("CRON_SECRET")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
+        let enable_internal_cron = env::var("ENABLE_INTERNAL_CRON")
+            .map(|value| parse_bool(&value))
+            .unwrap_or(true);
+
+        let daily_expenses_hour = env::var("DAILY_EXPENSES_HOUR")
+            .unwrap_or_else(|_| "0".to_string())
+            .parse::<u8>()
+            .map_err(|_| "DAILY_EXPENSES_HOUR must be 0-23".to_string())?;
+
+        if daily_expenses_hour > 23 {
+            return Err("DAILY_EXPENSES_HOUR must be 0-23".to_string());
+        }
 
         Ok(Self {
             host,
@@ -49,7 +58,8 @@ impl Config {
             supabase_url,
             cors_origins,
             request_timeout: Duration::from_secs(timeout_secs),
-            cron_secret,
+            enable_internal_cron,
+            daily_expenses_hour,
         })
     }
 
@@ -58,6 +68,13 @@ impl Config {
             .parse()
             .map_err(|error| format!("invalid HOST/PORT: {error}"))
     }
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn required_env(key: &str) -> Result<String, String> {

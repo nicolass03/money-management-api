@@ -1,4 +1,5 @@
 pub mod budgets;
+pub mod connection;
 pub mod exchange_rates;
 pub mod expenses;
 pub mod income;

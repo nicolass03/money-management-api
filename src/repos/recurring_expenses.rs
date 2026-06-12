@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::models::{CurrencyCode, PayFrequency, RecurringExpenseRow};
-use crate::repos::tags;
+use crate::repos::{connection, tags};
 use crate::schema::{expenses, recurring_expenses};
 use crate::state::DbPool;
 
@@ -13,7 +13,7 @@ pub async fn list_all(
     pool: &DbPool,
     user_id: Uuid,
 ) -> Result<Vec<RecurringExpenseRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     recurring_expenses::table
         .filter(recurring_expenses::user_id.eq(user_id))
         .order(recurring_expenses::name.asc())
@@ -28,7 +28,7 @@ pub async fn list_with_tags(
     user_id: Uuid,
 ) -> Result<Vec<(RecurringExpenseRow, Vec<String>)>, ApiError> {
     let rows = list_all(pool, user_id).await?;
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let tag_map = tags::tags_for_recurring(&mut conn, user_id, &ids).await?;
     Ok(rows
@@ -45,7 +45,7 @@ pub async fn find_by_id(
     user_id: Uuid,
     id: Uuid,
 ) -> Result<Option<RecurringExpenseRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     recurring_expenses::table
         .filter(recurring_expenses::user_id.eq(user_id))
         .filter(recurring_expenses::id.eq(id))
@@ -64,7 +64,7 @@ pub async fn find_with_tags(
     let Some(row) = find_by_id(pool, user_id, id).await? else {
         return Ok(None);
     };
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let tag_map = tags::tags_for_recurring(&mut conn, user_id, &[id]).await?;
     Ok(Some((row, tag_map.get(&id).cloned().unwrap_or_default())))
 }
@@ -81,7 +81,7 @@ pub async fn create(
     is_subscription: bool,
     last_payment_date: Option<chrono::NaiveDate>,
 ) -> Result<RecurringExpenseRow, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
     conn.transaction(|conn| {
         Box::pin(async move {
@@ -122,7 +122,7 @@ pub async fn update(
     is_subscription: bool,
     last_payment_date: Option<chrono::NaiveDate>,
 ) -> Result<Option<RecurringExpenseRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
     conn.transaction(|conn| {
         Box::pin(async move {
@@ -156,7 +156,7 @@ pub async fn update(
 }
 
 pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     conn.transaction(|conn| {
         Box::pin(async move {
             diesel::delete(

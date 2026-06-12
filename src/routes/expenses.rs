@@ -80,9 +80,14 @@ pub async fn patch_expense(
     Json(body): Json<PatchExpenseRequest>,
 ) -> Result<Json<ExpenseResponse>, ApiError> {
     let amount = require_positive_amount(body.amount)?;
-    expenses_repo::find_by_id(&state.db_pool, user.sub, id)
+    let existing = expenses_repo::find_by_id(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    if existing.is_system_generated() {
+        return Err(ApiError::BadRequest(
+            "cannot modify system-generated expense".into(),
+        ));
+    }
     let row = expenses_repo::update_amount(&state.db_pool, user.sub, id, amount)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -97,9 +102,14 @@ pub async fn delete_expense(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    expenses_repo::find_by_id(&state.db_pool, user.sub, id)
+    let existing = expenses_repo::find_by_id(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    if existing.is_system_generated() {
+        return Err(ApiError::BadRequest(
+            "cannot delete system-generated expense".into(),
+        ));
+    }
     expenses_repo::delete(&state.db_pool, user.sub, id).await?;
     Ok(Json(serde_json::json!({ "success": true })))
 }

@@ -3,6 +3,13 @@ use chrono::NaiveDate;
 use crate::error::ApiError;
 use crate::models::{CurrencyCode, PayFrequency};
 
+pub const MAX_NAME_LEN: usize = 200;
+pub const MAX_TAG_LEN: usize = 50;
+pub const MAX_TAGS: usize = 20;
+pub const MAX_AMOUNT: i32 = 1_000_000_000;
+pub const MIN_PROJECTION_FREE_MONEY: i32 = 0;
+pub const MAX_PROJECTION_FREE_MONEY: i32 = 1_000_000_000;
+
 pub fn parse_date(value: &str) -> Result<NaiveDate, ApiError> {
     if !regex_like_date(value) {
         return Err(ApiError::BadRequest("invalid date".into()));
@@ -42,22 +49,42 @@ pub fn require_non_empty_name(name: &str) -> Result<String, ApiError> {
     if trimmed.is_empty() {
         return Err(ApiError::BadRequest("name is required".into()));
     }
+    if trimmed.chars().count() > MAX_NAME_LEN {
+        return Err(ApiError::BadRequest("name is too long".into()));
+    }
     Ok(trimmed.to_string())
 }
 
 pub fn require_positive_amount(amount: i32) -> Result<i32, ApiError> {
-    if amount <= 0 {
+    if amount <= 0 || amount > MAX_AMOUNT {
         return Err(ApiError::BadRequest("invalid amount".into()));
     }
     Ok(amount)
 }
 
+pub fn require_projection_free_money(amount: i32) -> Result<i32, ApiError> {
+    if !(MIN_PROJECTION_FREE_MONEY..=MAX_PROJECTION_FREE_MONEY).contains(&amount) {
+        return Err(ApiError::BadRequest("invalid projection initial free money".into()));
+    }
+    Ok(amount)
+}
+
 pub fn parse_tag_names(tags: &[String]) -> Result<Vec<String>, ApiError> {
+    if tags.len() > MAX_TAGS {
+        return Err(ApiError::BadRequest("too many tags".into()));
+    }
+
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
     for tag in tags {
         let name = tag.trim().to_lowercase();
-        if name.is_empty() || !seen.insert(name.clone()) {
+        if name.is_empty() {
+            continue;
+        }
+        if name.chars().count() > MAX_TAG_LEN {
+            return Err(ApiError::BadRequest("tag is too long".into()));
+        }
+        if !seen.insert(name.clone()) {
             continue;
         }
         result.push(name);

@@ -119,6 +119,12 @@ pub struct ExpenseRow {
     pub created_at: DateTime<Utc>,
 }
 
+impl ExpenseRow {
+    pub fn is_system_generated(&self) -> bool {
+        self.recurring_id.is_some() || self.planned_expense_id.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = crate::schema::recurring_expenses)]
 pub struct RecurringExpenseRow {

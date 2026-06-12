@@ -21,8 +21,10 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["compression-full", "cors", "request-id", "timeout", "trace", "util"] }
+tower-http = { version = "0.6", features = ["compression-full", "cors", "limit", "request-id", "timeout", "trace", "util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json"] }
+governor = "0.8"
+tower_governor = "0.8"

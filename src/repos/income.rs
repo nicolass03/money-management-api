@@ -5,11 +5,12 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::models::{CurrencyCode, IncomeRow, IncomeSource};
+use crate::repos::connection;
 use crate::schema::income;
 use crate::state::DbPool;
 
 pub async fn list_all(pool: &DbPool, user_id: Uuid) -> Result<Vec<IncomeRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     income::table
         .filter(income::user_id.eq(user_id))
         .order(income::date.desc())
@@ -24,7 +25,7 @@ pub async fn find_by_id(
     user_id: Uuid,
     id: Uuid,
 ) -> Result<Option<IncomeRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     income::table
         .filter(income::user_id.eq(user_id))
         .filter(income::id.eq(id))
@@ -44,7 +45,7 @@ pub async fn create(
     source: IncomeSource,
     date: chrono::NaiveDate,
 ) -> Result<IncomeRow, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
     diesel::insert_into(income::table)
         .values((
@@ -73,7 +74,7 @@ pub async fn update(
     source: IncomeSource,
     date: chrono::NaiveDate,
 ) -> Result<Option<IncomeRow>, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     diesel::update(
         income::table
             .filter(income::user_id.eq(user_id))
@@ -94,7 +95,7 @@ pub async fn update(
 }
 
 pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
     diesel::delete(
         income::table
             .filter(income::user_id.eq(user_id))

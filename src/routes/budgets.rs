@@ -177,15 +177,10 @@ pub async fn create_budget_expense(
     let budget = budgets_repo::find_with_tags_and_spent(&state.db_pool, user.sub, budget_id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    let (budget_row, _budget_tags, spent) = budget;
+    let (budget_row, _budget_tags, _spent) = budget;
     let amount = require_positive_amount(body.amount)?;
     let date = parse_date(&body.date)?;
     let date_s = date.format("%Y-%m-%d").to_string();
-
-    let remaining = budget_row.amount - spent;
-    if amount > remaining {
-        return Err(ApiError::BadRequest("amount exceeds remaining budget".into()));
-    }
 
     let period = get_current_pay_period(&state.db_pool, user.sub)
         .await?
@@ -245,7 +240,8 @@ pub async fn delete_budget_expense(
     budgets_repo::find_by_id(&state.db_pool, user.sub, budget_id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    let deleted = budgets_repo::delete_budget_expense(&state.db_pool, user.sub, expense_id).await?;
+    let deleted =
+        budgets_repo::delete_budget_expense(&state.db_pool, user.sub, budget_id, expense_id).await?;
     if !deleted {
         return Err(ApiError::NotFound);
     }

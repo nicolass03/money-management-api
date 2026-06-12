@@ -1,15 +1,19 @@
 mod app;
 mod auth;
 mod config;
+mod jobs;
 mod dto;
 mod error;
 mod models;
+mod rate_limit;
 mod repos;
 mod routes;
 mod schema;
 mod services;
 mod state;
 mod validation;
+
+use std::net::SocketAddr;
 
 use tracing_subscriber::EnvFilter;
 
@@ -19,7 +23,10 @@ use crate::state::AppState;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenvy::dotenv().ok();
+    // Load crate-root .env and override stale empty shell exports (e.g. after
+    // `export DATABASE_URL="${DATABASE_URL//:6543/:5432}"` with an unset var).
+    let env_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".env");
+    dotenvy::from_path_override(env_path).ok();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -42,13 +49,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error
     })?;
 
+    jobs::daily_expenses::spawn_scheduler(state.db_pool.clone(), &config);
+
     let app = build_app(&config, state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("listening on {addr}");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }

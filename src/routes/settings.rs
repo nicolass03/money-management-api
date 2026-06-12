@@ -5,9 +5,11 @@ use crate::auth::extractor::AuthenticatedUser;
 use crate::dto::PatchSettingsRequest;
 use crate::error::ApiError;
 use crate::models::UserSettingsResponse;
-use crate::repos::settings as settings_repo;
+use crate::repos::{income_schedules, settings as settings_repo};
 use crate::state::AppState;
-use crate::validation::{parse_currency, parse_date, regex_like_date};
+use crate::validation::{
+    parse_currency, parse_date, regex_like_date, require_projection_free_money,
+};
 
 pub async fn get_settings(
     State(state): State<AppState>,
@@ -39,12 +41,23 @@ pub async fn patch_settings(
         None => None,
     };
 
+    if let Some(Some(schedule_id)) = body.primary_schedule_id {
+        income_schedules::find_by_id(&state.db_pool, user.sub, schedule_id)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+    }
+
+    let projection_initial_free_money = match body.projection_initial_free_money {
+        Some(value) => Some(require_projection_free_money(value)?),
+        None => None,
+    };
+
     let row = settings_repo::update_user_settings(
         &state.db_pool,
         user.sub,
         display_currency,
         body.primary_schedule_id,
-        body.projection_initial_free_money,
+        projection_initial_free_money,
         projection_start_date,
     )
     .await?;

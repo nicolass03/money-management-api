@@ -1,9 +1,15 @@
 use diesel_async::pooled_connection::bb8::Pool;
-use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::pooled_connection::{
+    AsyncDieselConnectionManager, ManagerConfig, RecyclingMethod,
+};
 use diesel_async::AsyncPgConnection;
+
+use std::sync::Arc;
 
 use crate::auth::jwt::JwtValidator;
 use crate::config::Config;
+use crate::rate_limit::{auth_failure_limiter, force_refresh_limiter, IpRateLimiter, UserRateLimiter};
+use crate::repos::connection;
 
 pub type DbPool = Pool<AsyncPgConnection>;
 
@@ -11,12 +17,27 @@ pub type DbPool = Pool<AsyncPgConnection>;
 pub struct AppState {
     pub db_pool: DbPool,
     pub jwt_validator: JwtValidator,
-    pub cron_secret: Option<String>,
+    pub force_refresh_limiter: Arc<UserRateLimiter>,
+    pub auth_failure_limiter: Arc<IpRateLimiter>,
 }
 
 impl AppState {
     pub async fn new(config: &Config) -> Result<Self, String> {
-        let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(&config.database_url);
+        let mut manager_config = ManagerConfig::<AsyncPgConnection>::default();
+        manager_config.recycling_method = RecyclingMethod::CustomFunction(Box::new(|conn| {
+            Box::pin(async move {
+                connection::reset_rls_context(conn).await.map_err(|error| {
+                    diesel::result::Error::QueryBuilderError(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        error.to_string(),
+                    )))
+                })
+            })
+        }));
+        let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(
+            &config.database_url,
+            manager_config,
+        );
         let db_pool = Pool::builder()
             .build(manager)
             .await
@@ -28,7 +49,8 @@ impl AppState {
         Ok(Self {
             db_pool,
             jwt_validator,
-            cron_secret: config.cron_secret.clone(),
+            force_refresh_limiter: force_refresh_limiter(),
+            auth_failure_limiter: auth_failure_limiter(),
         })
     }
 }

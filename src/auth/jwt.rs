@@ -16,6 +16,7 @@ pub struct AuthUser {
 struct SupabaseClaims {
     sub: String,
     email: Option<String>,
+    role: Option<String>,
     #[allow(dead_code)]
     aud: String,
 }
@@ -143,6 +144,12 @@ impl JwtValidator {
         let token_data = decode::<SupabaseClaims>(token, key, &validation).map_err(|error| {
             tracing::debug!(%error, "jwt validation failed");
         })?;
+
+        let role = token_data.claims.role.as_deref().unwrap_or_default();
+        if role != "authenticated" {
+            tracing::debug!(%role, "jwt rejected role claim");
+            return Err(());
+        }
 
         let email = token_data.claims.email.filter(|value| !value.trim().is_empty());
         let email = email.ok_or_else(|| {
