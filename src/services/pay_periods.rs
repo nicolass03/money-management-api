@@ -2,7 +2,7 @@ use chrono::{Datelike, NaiveDate};
 
 use crate::models::{IncomePayScheduleRow, PayFrequency, RecurringExpenseRow};
 
-pub const PROJECTION_MONTHS_FORWARD: u32 = 7;
+pub const PROJECTION_MONTHS_FORWARD: u32 = 12;
 
 #[derive(Debug, Clone)]
 pub struct PayPeriod {
