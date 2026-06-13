@@ -56,6 +56,42 @@ pub async fn list_with_tags_with_conn(
         .collect())
 }
 
+pub async fn list_with_tags_in_range(
+    pool: &DbPool,
+    user_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<Vec<(ExpenseRow, Vec<String>)>, ApiError> {
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    list_with_tags_in_range_with_conn(&mut conn, user_id, from, to).await
+}
+
+pub async fn list_with_tags_in_range_with_conn(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<Vec<(ExpenseRow, Vec<String>)>, ApiError> {
+    let rows = expenses::table
+        .filter(expenses::user_id.eq(user_id))
+        .filter(expenses::date.ge(from))
+        .filter(expenses::date.le(to))
+        .order(expenses::date.desc())
+        .select(ExpenseRow::as_select())
+        .load(conn)
+        .await
+        .map_err(ApiError::from)?;
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let tag_map = tags::tags_for_expenses(conn, user_id, &ids).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let tags = tag_map.get(&row.id).cloned().unwrap_or_default();
+            (row, tags)
+        })
+        .collect())
+}
+
 pub async fn find_by_id(
     pool: &DbPool,
     user_id: Uuid,

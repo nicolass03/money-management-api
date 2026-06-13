@@ -5,7 +5,7 @@ use crate::auth::extractor::AuthenticatedUser;
 use crate::cache::InvalidationScope;
 use crate::dto::PatchSettingsRequest;
 use crate::error::ApiError;
-use crate::models::UserSettingsResponse;
+use crate::models::{UserSettingsResponse, UserSettingsRow};
 use crate::repos::{income_schedules, settings as settings_repo};
 use crate::state::AppState;
 use crate::validation::{
@@ -17,7 +17,8 @@ pub async fn get_settings(
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<UserSettingsResponse>, ApiError> {
     let row = state.loader.user_settings(user.sub).await?;
-    Ok(Json(row.into()))
+    let response = settings_response(&state.db_pool, user.sub, row).await?;
+    Ok(Json(response))
 }
 
 pub async fn patch_settings(
@@ -67,5 +68,19 @@ pub async fn patch_settings(
         .cache
         .invalidate(InvalidationScope::SettingsChange, user.sub);
 
-    Ok(Json(row.into()))
+    let response = settings_response(&state.db_pool, user.sub, row).await?;
+    Ok(Json(response))
+}
+
+async fn settings_response(
+    pool: &crate::state::DbPool,
+    user_id: uuid::Uuid,
+    row: UserSettingsRow,
+) -> Result<UserSettingsResponse, ApiError> {
+    let primary_schedule = if let Some(schedule_id) = row.primary_schedule_id {
+        income_schedules::find_by_id(pool, user_id, schedule_id).await?
+    } else {
+        None
+    };
+    Ok(UserSettingsResponse::from_row(row, primary_schedule))
 }

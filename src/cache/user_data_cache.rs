@@ -5,6 +5,8 @@ use moka::future::Cache;
 use uuid::Uuid;
 
 use crate::dto::{MoneyContextResponse, ProjectionsResponse};
+use crate::services::expense_period::ExpensePeriodViewResponse;
+use crate::services::upcoming_payable::PayableFutureItem;
 use crate::models::{
     BudgetRow, ExpenseRow, IncomePayScheduleRow, IncomeRow, PlannedExpenseRow,
     RecurringExpenseRow, UserSettingsRow,
@@ -14,6 +16,11 @@ use super::invalidation::InvalidationScope;
 use super::resource::CacheResource;
 
 type CacheKey = (Uuid, i64);
+// `today` is part of the key so day-relative views (last-month / last-3-months ranges,
+// pay-period `due <= today` filtering, upcoming-payable window) don't serve stale
+// boundaries across midnight while the revision is unchanged.
+type PeriodViewCacheKey = (Uuid, i64, String, bool, String);
+type UpcomingPayableCacheKey = (Uuid, i64, i32, String);
 
 pub type ExpensesWithTags = Vec<(ExpenseRow, Vec<String>)>;
 pub type RecurringWithTags = Vec<(RecurringExpenseRow, Vec<String>)>;
@@ -40,6 +47,8 @@ pub struct UserDataCache {
     tags: Cache<CacheKey, Arc<Vec<String>>>,
     projections: Cache<CacheKey, Arc<ProjectionsResponse>>,
     money_context: Cache<CacheKey, Arc<MoneyContextResponse>>,
+    expense_period_view: Cache<PeriodViewCacheKey, Arc<ExpensePeriodViewResponse>>,
+    upcoming_payable: Cache<UpcomingPayableCacheKey, Arc<Vec<PayableFutureItem>>>,
 }
 
 impl UserDataCache {
@@ -56,6 +65,14 @@ impl UserDataCache {
             tags: build_cache(max_capacity),
             projections: build_cache(max_capacity),
             money_context: build_cache(max_capacity),
+            expense_period_view: Cache::builder()
+                .max_capacity(max_capacity)
+                .time_to_live(Duration::from_secs(3600))
+                .build(),
+            upcoming_payable: Cache::builder()
+                .max_capacity(max_capacity)
+                .time_to_live(Duration::from_secs(3600))
+                .build(),
         }
     }
 
@@ -268,6 +285,8 @@ impl UserDataCache {
             CacheResource::Tags,
             CacheResource::Projections,
             CacheResource::MoneyContext,
+            CacheResource::ExpensePeriodView,
+            CacheResource::UpcomingPayable,
         ] {
             self.invalidate_resource(user_id, resource);
         }
@@ -284,6 +303,8 @@ impl UserDataCache {
         self.tags.run_pending_tasks().await;
         self.projections.run_pending_tasks().await;
         self.money_context.run_pending_tasks().await;
+        self.expense_period_view.run_pending_tasks().await;
+        self.upcoming_payable.run_pending_tasks().await;
     }
 
     fn invalidate_resource(&self, user_id: Uuid, resource: CacheResource) {
@@ -318,7 +339,93 @@ impl UserDataCache {
             CacheResource::MoneyContext => self
                 .money_context
                 .invalidate_entries_if(move |key: &CacheKey, _| key.0 == user_id),
+            CacheResource::ExpensePeriodView => self
+                .expense_period_view
+                .invalidate_entries_if(move |key: &PeriodViewCacheKey, _| key.0 == user_id),
+            CacheResource::UpcomingPayable => self
+                .upcoming_payable
+                .invalidate_entries_if(move |key: &UpcomingPayableCacheKey, _| key.0 == user_id),
         };
+    }
+
+    pub async fn get_expense_period_view(
+        &self,
+        user_id: Uuid,
+        revision: i64,
+        period: &str,
+        include_projected: bool,
+        today: &str,
+    ) -> Option<Arc<ExpensePeriodViewResponse>> {
+        if !self.enabled {
+            return None;
+        }
+        let key = (
+            user_id,
+            revision,
+            period.to_string(),
+            include_projected,
+            today.to_string(),
+        );
+        self.expense_period_view.get(&key).await
+    }
+
+    pub async fn set_expense_period_view(
+        &self,
+        user_id: Uuid,
+        revision: i64,
+        period: &str,
+        include_projected: bool,
+        today: &str,
+        value: ExpensePeriodViewResponse,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        self.expense_period_view
+            .insert(
+                (
+                    user_id,
+                    revision,
+                    period.to_string(),
+                    include_projected,
+                    today.to_string(),
+                ),
+                Arc::new(value),
+            )
+            .await;
+    }
+
+    pub async fn get_upcoming_payable(
+        &self,
+        user_id: Uuid,
+        revision: i64,
+        horizon_days: i32,
+        today: &str,
+    ) -> Option<Arc<Vec<PayableFutureItem>>> {
+        if !self.enabled {
+            return None;
+        }
+        let key = (user_id, revision, horizon_days, today.to_string());
+        self.upcoming_payable.get(&key).await
+    }
+
+    pub async fn set_upcoming_payable(
+        &self,
+        user_id: Uuid,
+        revision: i64,
+        horizon_days: i32,
+        today: &str,
+        value: Vec<PayableFutureItem>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        self.upcoming_payable
+            .insert(
+                (user_id, revision, horizon_days, today.to_string()),
+                Arc::new(value),
+            )
+            .await;
     }
 
     async fn get_list<T: Send + Sync + Clone + 'static>(

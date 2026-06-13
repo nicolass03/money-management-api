@@ -33,6 +33,14 @@ Read-heavy endpoints use a revision-keyed **moka** cache (`src/cache/`). `user_s
 
 **New write paths** must call `settings::bump_cache_revision` inside the same Postgres transaction and `state.cache.invalidate(InvalidationScope::…, user_id)` from the route handler (mirrors web `invalidation.ts`). Scopes live in `src/cache/invalidation.rs`.
 
+**Query params (performance):**
+- `GET /expenses?from=YYYY-MM-DD&to=YYYY-MM-DD` — date-filtered list (bypasses moka; both params required). Unfiltered list still uses moka cache.
+- `GET /expenses/period-view?period=last-period|last-month|last-3-months&includeProjected=true|false` — server-computed period items + `totalSpend`, plus `byTag` / `subscriptionSplit` chart aggregates for the resolved period (moka keyed by period + `includeProjected` + revision + day). Default `includeProjected=false` (actual spend only); web passes `true` to include projected recurring/planned/budget rows in pay period. Chart aggregates are folded in here (no separate chart-summary endpoint) so a tab load is one request.
+- `GET /expenses/upcoming-payable?horizonDays=30` — upcoming recurring/planned payables (moka keyed by horizon + revision + day).
+- `GET /settings` embeds `primarySchedule` when `primaryScheduleId` is set (avoids separate income-schedule fetch on tab init).
+- `GET /projections?includePast=false` — omits past rows from response (default `includePast=true` for web backward compat). Full projection rows remain in moka cache; filter applied on read.
+- `GET /settings` exposes `cacheRevision` for client foreground sync (iOS compares on app resume).
+
 Exchange rates also use an in-memory layer (`src/services/fx_memory.rs`) atop the existing `exchange_rate_snapshots` table. Auth skips `ensure_user_exists` after first successful upsert per process (`AppState.known_users`).
 
 Multi-replica deploys: DB revision gives correctness without Redis; each replica holds independent memory until TTL/eviction.

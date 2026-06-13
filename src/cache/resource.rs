@@ -10,4 +10,6 @@ pub enum CacheResource {
     Tags,
     Projections,
     MoneyContext,
+    ExpensePeriodView,
+    UpcomingPayable,
 }

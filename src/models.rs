@@ -202,19 +202,27 @@ pub struct UserSettingsResponse {
     pub id: Uuid,
     pub display_currency: CurrencyCode,
     pub primary_schedule_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_schedule: Option<IncomePayScheduleResponse>,
     pub projection_initial_free_money: i32,
     pub projection_start_date: Option<NaiveDate>,
+    pub cache_revision: i64,
     pub updated_at: DateTime<Utc>,
 }
 
-impl From<UserSettingsRow> for UserSettingsResponse {
-    fn from(row: UserSettingsRow) -> Self {
+impl UserSettingsResponse {
+    pub fn from_row(
+        row: UserSettingsRow,
+        primary_schedule: Option<IncomePayScheduleRow>,
+    ) -> Self {
         Self {
             id: row.user_id,
             display_currency: row.display_currency,
             primary_schedule_id: row.primary_schedule_id,
+            primary_schedule: primary_schedule.map(IncomePayScheduleResponse::from),
             projection_initial_free_money: row.projection_initial_free_money,
             projection_start_date: row.projection_start_date,
+            cache_revision: row.cache_revision,
             updated_at: row.updated_at,
         }
     }

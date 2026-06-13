@@ -77,6 +77,14 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
             "/expenses",
             get(routes::expenses::list_expenses).post(routes::expenses::create_expense),
         )
+        .route(
+            "/expenses/period-view",
+            get(routes::expenses::get_expense_period_view),
+        )
+        .route(
+            "/expenses/upcoming-payable",
+            get(routes::expenses::get_upcoming_payable),
+        )
         .route("/expenses/early-pay", post(routes::expenses::early_pay_expense))
         .route(
             "/expenses/{id}",

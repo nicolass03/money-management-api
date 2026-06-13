@@ -64,7 +64,7 @@ fn clamp_day_of_month(year: i32, month: u32, day: u32) -> u32 {
     day.min(days_in_month(year, month))
 }
 
-fn add_months(iso: &str, months: i32) -> String {
+pub fn add_months(iso: &str, months: i32) -> String {
     let (y, m, d) = parse_date(iso);
     let total_months = y * 12 + i32::try_from(m - 1).unwrap() + months;
     let new_y = total_months.div_euclid(12);

@@ -16,6 +16,43 @@ pub struct PatchSettingsRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExpensePeriodViewQuery {
+    pub period: String,
+    #[serde(default)]
+    pub include_projected: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpcomingPayableQuery {
+    #[serde(default = "default_horizon_days")]
+    pub horizon_days: i32,
+}
+
+fn default_horizon_days() -> i32 {
+    30
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpensesQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectionsQuery {
+    #[serde(default = "default_include_past")]
+    pub include_past: bool,
+}
+
+fn default_include_past() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MoneyContextQuery {
     #[serde(default)]
     pub force_refresh: bool,

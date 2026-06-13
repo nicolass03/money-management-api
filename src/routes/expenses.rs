@@ -1,10 +1,13 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
 use crate::cache::InvalidationScope;
-use crate::dto::{CreateExpenseRequest, EarlyPayExpenseRequest, PatchExpenseRequest};
+use crate::dto::{
+    CreateExpenseRequest, EarlyPayExpenseRequest, ExpensePeriodViewQuery, ExpensesQuery,
+    PatchExpenseRequest, UpcomingPayableQuery,
+};
 use crate::error::ApiError;
 use crate::models::{expense_to_response, ExpenseResponse};
 use crate::repos::{expenses as expenses_repo, planned_expenses, recurring_expenses};
@@ -16,15 +19,57 @@ use crate::validation::{
     today_iso,
 };
 
+pub async fn get_expense_period_view(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Query(query): Query<ExpensePeriodViewQuery>,
+) -> Result<Json<crate::services::expense_period::ExpensePeriodViewResponse>, ApiError> {
+    let response = state
+        .loader
+        .expense_period_view(user.sub, &query.period, query.include_projected)
+        .await?;
+    Ok(Json(response))
+}
+
+pub async fn get_upcoming_payable(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Query(query): Query<UpcomingPayableQuery>,
+) -> Result<Json<Vec<crate::services::upcoming_payable::PayableFutureItem>>, ApiError> {
+    let items = state
+        .loader
+        .upcoming_payable(user.sub, query.horizon_days)
+        .await?;
+    Ok(Json(items))
+}
+
 pub async fn list_expenses(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(query): Query<ExpensesQuery>,
 ) -> Result<Json<Vec<ExpenseResponse>>, ApiError> {
     let settings = state.loader.user_settings(user.sub).await?;
-    let rows = state
-        .loader
-        .expenses_with_tags(user.sub, settings.cache_revision)
-        .await?;
+
+    let rows = match (&query.from, &query.to) {
+        (Some(from), Some(to)) => {
+            let from_date = parse_date(from)?;
+            let to_date = parse_date(to)?;
+            expenses_repo::list_with_tags_in_range(&state.db_pool, user.sub, from_date, to_date)
+                .await?
+        }
+        (None, None) => {
+            state
+                .loader
+                .expenses_with_tags(user.sub, settings.cache_revision)
+                .await?
+        }
+        _ => {
+            return Err(ApiError::BadRequest(
+                "both from and to query params are required for date filtering".into(),
+            ));
+        }
+    };
+
     Ok(Json(
         rows.into_iter()
             .map(|(row, tags)| expense_to_response(row, tags))

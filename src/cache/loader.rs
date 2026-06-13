@@ -12,7 +12,11 @@ use crate::repos::{
     settings, tags,
 };
 use crate::services::exchange_rates::get_exchange_rates;
+use crate::services::expense_period::{
+    build_expense_period_view, ExpensePeriodKey, ExpensePeriodViewResponse,
+};
 use crate::services::projections::build_projection_rows;
+use crate::services::upcoming_payable::{build_upcoming_payable_items, PayableFutureItem};
 use crate::state::DbPool;
 use crate::validation::today_iso;
 
@@ -162,12 +166,16 @@ impl UserDataLoader {
         Ok(response)
     }
 
-    pub async fn projections(&self, user_id: Uuid) -> Result<ProjectionsResponse, ApiError> {
+    pub async fn projections(
+        &self,
+        user_id: Uuid,
+        include_past: bool,
+    ) -> Result<ProjectionsResponse, ApiError> {
         let user_settings = settings::get_user_settings(&self.pool, user_id).await?;
         let revision = user_settings.cache_revision;
 
         if let Some(cached) = self.cache.get_projections(user_id, revision).await {
-            return Ok((*cached).clone());
+            return Ok(filter_projection_rows((*cached).clone(), include_past));
         }
 
         let Some(schedule_id) = user_settings.primary_schedule_id else {
@@ -237,6 +245,114 @@ impl UserDataLoader {
             .set_projections(user_id, revision, response.clone())
             .await;
 
+        Ok(filter_projection_rows(response, include_past))
+    }
+
+    pub async fn expense_period_view(
+        &self,
+        user_id: Uuid,
+        period: &str,
+        include_projected: bool,
+    ) -> Result<ExpensePeriodViewResponse, ApiError> {
+        let period_key = ExpensePeriodKey::parse(period).ok_or_else(|| {
+            ApiError::BadRequest("invalid period; use last-period, last-month, or last-3-months".into())
+        })?;
+
+        let user_settings = settings::get_user_settings(&self.pool, user_id).await?;
+        let revision = user_settings.cache_revision;
+        let today = today_iso();
+
+        if let Some(cached) = self
+            .cache
+            .get_expense_period_view(user_id, revision, period, include_projected, &today)
+            .await
+        {
+            return Ok((*cached).clone());
+        }
+
+        let rates = get_exchange_rates(&self.pool, false).await?;
+        let display_currency = user_settings.display_currency;
+
+        let primary_schedule = if let Some(schedule_id) = user_settings.primary_schedule_id {
+            let mut conn = connection::user_connection(&self.pool, user_id).await?;
+            income_schedules::find_by_id_with_conn(&mut conn, user_id, schedule_id).await?
+        } else {
+            None
+        };
+
+        let expense_rows = self.expenses_with_tags(user_id, revision).await?;
+        let recurring = self.recurring_with_tags(user_id, revision).await?;
+        let planned = self.planned_with_tags(user_id, revision).await?;
+        let budgets = self.budgets_with_tags_and_spent(user_id, revision).await?;
+
+        let response = build_expense_period_view(
+            period_key,
+            primary_schedule.as_ref(),
+            &expense_rows,
+            &recurring,
+            &planned,
+            &budgets,
+            display_currency,
+            &rates,
+            &today,
+            include_projected,
+        )
+        .ok_or_else(|| {
+            ApiError::BadRequest("set a primary pay schedule in settings for pay-period view".into())
+        })?;
+
+        self.cache
+            .set_expense_period_view(
+                user_id,
+                revision,
+                period,
+                include_projected,
+                &today,
+                response.clone(),
+            )
+            .await;
+
         Ok(response)
     }
+
+    pub async fn upcoming_payable(
+        &self,
+        user_id: Uuid,
+        horizon_days: i32,
+    ) -> Result<Vec<PayableFutureItem>, ApiError> {
+        let user_settings = settings::get_user_settings(&self.pool, user_id).await?;
+        let revision = user_settings.cache_revision;
+        let today = today_iso();
+
+        if let Some(cached) = self
+            .cache
+            .get_upcoming_payable(user_id, revision, horizon_days, &today)
+            .await
+        {
+            return Ok((*cached).clone());
+        }
+
+        let expense_rows = self.expenses_with_tags(user_id, revision).await?;
+        let recurring = self.recurring_with_tags(user_id, revision).await?;
+        let planned = self.planned_with_tags(user_id, revision).await?;
+
+        let items =
+            build_upcoming_payable_items(&expense_rows, &recurring, &planned, &today, horizon_days);
+
+        self.cache
+            .set_upcoming_payable(user_id, revision, horizon_days, &today, items.clone())
+            .await;
+
+        Ok(items)
+    }
+}
+
+fn filter_projection_rows(
+    mut response: ProjectionsResponse,
+    include_past: bool,
+) -> ProjectionsResponse {
+    if !include_past {
+        response.rows.retain(|row| !row.is_past);
+    }
+    response
 }

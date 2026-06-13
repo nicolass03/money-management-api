@@ -15,24 +15,36 @@ pub enum InvalidationScope {
 impl InvalidationScope {
     pub fn resources(self) -> &'static [CacheResource] {
         match self {
-            Self::ExpenseChange => &[CacheResource::Expenses, CacheResource::Tags, CacheResource::Projections],
+            Self::ExpenseChange => &[
+                CacheResource::Expenses,
+                CacheResource::Tags,
+                CacheResource::Projections,
+                CacheResource::ExpensePeriodView,
+                CacheResource::UpcomingPayable,
+            ],
             Self::RecurringChange => &[
                 CacheResource::Recurring,
                 CacheResource::Expenses,
                 CacheResource::Tags,
                 CacheResource::Projections,
+                CacheResource::ExpensePeriodView,
+                CacheResource::UpcomingPayable,
             ],
             Self::PlannedChange => &[
                 CacheResource::Planned,
                 CacheResource::Expenses,
                 CacheResource::Tags,
                 CacheResource::Projections,
+                CacheResource::ExpensePeriodView,
+                CacheResource::UpcomingPayable,
             ],
             Self::BudgetChange => &[
                 CacheResource::Budgets,
                 CacheResource::Expenses,
                 CacheResource::Tags,
                 CacheResource::Projections,
+                CacheResource::ExpensePeriodView,
+                CacheResource::UpcomingPayable,
             ],
             Self::IncomeChange => &[CacheResource::Income, CacheResource::Projections],
             Self::ScheduleChange => &[
@@ -40,6 +52,7 @@ impl InvalidationScope {
                 CacheResource::Income,
                 CacheResource::Projections,
                 CacheResource::Settings,
+                CacheResource::ExpensePeriodView,
             ],
             Self::SettingsChange => &[
                 CacheResource::Settings,
@@ -47,6 +60,8 @@ impl InvalidationScope {
                 CacheResource::Projections,
                 CacheResource::Income,
                 CacheResource::Expenses,
+                CacheResource::ExpensePeriodView,
+                CacheResource::UpcomingPayable,
             ],
             Self::MoneyContextRefresh => &[CacheResource::MoneyContext],
         }
