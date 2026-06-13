@@ -34,10 +34,18 @@ fn build_cache<T: Send + Sync + 'static>(max_capacity: u64) -> Cache<CacheKey, A
         .build()
 }
 
+/// How long a user's settings row (which carries `cache_revision`) may live in memory
+/// without being re-read. Eviction on every mutation keeps it correct; this short TTL is
+/// only a self-healing safety net in case an invalidation is ever missed.
+const SETTINGS_TTL: Duration = Duration::from_secs(60);
+
 #[derive(Clone)]
 pub struct UserDataCache {
     enabled: bool,
-    settings: Cache<CacheKey, Arc<UserSettingsRow>>,
+    // Keyed by `user_id` alone (not revision): this is what lets a warm request obtain the
+    // current `cache_revision` without a database round-trip. Everything else is then keyed
+    // by `(user_id, revision)`.
+    settings: Cache<Uuid, Arc<UserSettingsRow>>,
     expenses: Cache<CacheKey, Arc<ExpensesWithTags>>,
     recurring: Cache<CacheKey, Arc<RecurringWithTags>>,
     planned: Cache<CacheKey, Arc<PlannedWithTags>>,
@@ -55,7 +63,10 @@ impl UserDataCache {
     pub fn new(enabled: bool, max_capacity: u64) -> Self {
         Self {
             enabled,
-            settings: build_cache(max_capacity),
+            settings: Cache::builder()
+                .max_capacity(max_capacity)
+                .time_to_live(SETTINGS_TTL)
+                .build(),
             expenses: build_cache(max_capacity),
             recurring: build_cache(max_capacity),
             planned: build_cache(max_capacity),
@@ -80,28 +91,23 @@ impl UserDataCache {
         self.enabled
     }
 
-    pub async fn get_settings(
-        &self,
-        user_id: Uuid,
-        revision: i64,
-    ) -> Option<Arc<UserSettingsRow>> {
+    pub async fn get_settings(&self, user_id: Uuid) -> Option<Arc<UserSettingsRow>> {
         if !self.enabled {
             return None;
         }
-        let key = (user_id, revision);
-        if let Some(hit) = self.settings.get(&key).await {
-            tracing::debug!(%user_id, revision, resource = "settings", "cache hit");
+        if let Some(hit) = self.settings.get(&user_id).await {
+            tracing::debug!(%user_id, resource = "settings", "cache hit");
             return Some(hit);
         }
         None
     }
 
-    pub async fn set_settings(&self, user_id: Uuid, revision: i64, value: UserSettingsRow) {
+    pub async fn set_settings(&self, user_id: Uuid, value: Arc<UserSettingsRow>) {
         if !self.enabled {
             return;
         }
-        tracing::debug!(%user_id, revision, resource = "settings", "cache store");
-        self.settings.insert((user_id, revision), Arc::new(value)).await;
+        tracing::debug!(%user_id, resource = "settings", "cache store");
+        self.settings.insert(user_id, value).await;
     }
 
     pub async fn get_expenses(
@@ -222,12 +228,13 @@ impl UserDataCache {
         &self,
         user_id: Uuid,
         revision: i64,
-        value: ProjectionsResponse,
+        value: Arc<ProjectionsResponse>,
     ) {
+        if !self.enabled {
+            return;
+        }
         tracing::debug!(%user_id, revision, resource = "projections", "cache store");
-        self.projections
-            .insert((user_id, revision), Arc::new(value))
-            .await;
+        self.projections.insert((user_id, revision), value).await;
     }
 
     pub async fn get_money_context(
@@ -250,32 +257,42 @@ impl UserDataCache {
         &self,
         user_id: Uuid,
         revision: i64,
-        value: MoneyContextResponse,
+        value: Arc<MoneyContextResponse>,
     ) {
         if !self.enabled {
             return;
         }
         tracing::debug!(%user_id, revision, resource = "money_context", "cache store");
-        self.money_context
-            .insert((user_id, revision), Arc::new(value))
-            .await;
+        self.money_context.insert((user_id, revision), value).await;
     }
 
-    pub fn invalidate(&self, scope: InvalidationScope, user_id: Uuid) {
+    pub async fn invalidate(&self, scope: InvalidationScope, user_id: Uuid) {
         if !self.enabled {
             return;
         }
+        // Every mutation bumps `cache_revision`, so the cached settings row (which carries
+        // the revision keying every other cache) is stale after *any* change — drop it
+        // unconditionally, not just for SettingsChange. This must be a *precise, immediate*
+        // single-key eviction (not the deferred, clock-based `invalidate_entries_if`):
+        // correctness now hinges on the very next read seeing the fresh revision, including
+        // a mutate-then-immediately-refetch within the same millisecond. Once the revision
+        // advances, stale per-resource entries are simply unreachable (new key), so cleaning
+        // those up can stay deferred and best-effort below.
+        self.settings.invalidate(&user_id).await;
         for resource in scope.resources() {
+            if matches!(resource, CacheResource::Settings) {
+                continue; // handled precisely above
+            }
             self.invalidate_resource(user_id, *resource);
         }
     }
 
-    pub fn invalidate_all(&self, user_id: Uuid) {
+    pub async fn invalidate_all(&self, user_id: Uuid) {
         if !self.enabled {
             return;
         }
+        self.settings.invalidate(&user_id).await;
         for resource in [
-            CacheResource::Settings,
             CacheResource::Expenses,
             CacheResource::Recurring,
             CacheResource::Planned,
@@ -311,7 +328,7 @@ impl UserDataCache {
         let _ = match resource {
             CacheResource::Settings => self
                 .settings
-                .invalidate_entries_if(move |key: &CacheKey, _| key.0 == user_id),
+                .invalidate_entries_if(move |key: &Uuid, _| *key == user_id),
             CacheResource::Expenses => self
                 .expenses
                 .invalidate_entries_if(move |key: &CacheKey, _| key.0 == user_id),
@@ -376,7 +393,7 @@ impl UserDataCache {
         period: &str,
         include_projected: bool,
         today: &str,
-        value: ExpensePeriodViewResponse,
+        value: Arc<ExpensePeriodViewResponse>,
     ) {
         if !self.enabled {
             return;
@@ -390,7 +407,7 @@ impl UserDataCache {
                     include_projected,
                     today.to_string(),
                 ),
-                Arc::new(value),
+                value,
             )
             .await;
     }
@@ -415,7 +432,7 @@ impl UserDataCache {
         revision: i64,
         horizon_days: i32,
         today: &str,
-        value: Vec<PayableFutureItem>,
+        value: Arc<Vec<PayableFutureItem>>,
     ) {
         if !self.enabled {
             return;
@@ -423,7 +440,7 @@ impl UserDataCache {
         self.upcoming_payable
             .insert(
                 (user_id, revision, horizon_days, today.to_string()),
-                Arc::new(value),
+                value,
             )
             .await;
     }

@@ -9,7 +9,7 @@ use diesel_async::RunQueryDsl;
 use crate::cache::{InvalidationScope, UserDataCache};
 use crate::config::Config;
 use crate::error::ApiError;
-use crate::repos::users;
+use crate::repos::{connection, users};
 use crate::services::charge_due_expenses::charge_due_expenses_for_date;
 use crate::state::DbPool;
 use crate::validation::today_iso;
@@ -28,7 +28,7 @@ pub async fn run_daily_expenses(
         let user_created = charge_due_expenses_for_date(pool, user_id, &date).await?;
         if user_created > 0 {
             if let Some(cache) = cache {
-                cache.invalidate(InvalidationScope::ExpenseChange, user_id);
+                cache.invalidate(InvalidationScope::ExpenseChange, user_id).await;
             }
         }
         created += user_created;
@@ -43,7 +43,7 @@ struct AdvisoryLockRow {
 }
 
 async fn try_acquire_lock(pool: &DbPool) -> Result<bool, ApiError> {
-    let mut conn = pool.get().await?;
+    let mut conn = connection::neutral_connection(pool).await?;
     let row: AdvisoryLockRow = sql_query("SELECT pg_try_advisory_lock($1) AS acquired")
         .bind::<BigInt, _>(DAILY_EXPENSES_LOCK_KEY)
         .get_result(&mut conn)
@@ -53,7 +53,7 @@ async fn try_acquire_lock(pool: &DbPool) -> Result<bool, ApiError> {
 }
 
 async fn release_lock(pool: &DbPool) {
-    if let Ok(mut conn) = pool.get().await {
+    if let Ok(mut conn) = connection::neutral_connection(pool).await {
         let _: Result<AdvisoryLockRow, _> = sql_query("SELECT pg_advisory_unlock($1) AS acquired")
             .bind::<BigInt, _>(DAILY_EXPENSES_LOCK_KEY)
             .get_result(&mut conn)

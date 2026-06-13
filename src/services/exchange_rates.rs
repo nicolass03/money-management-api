@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::error::ApiError;
 use crate::models::ExchangeRateSnapshotRow;
+use crate::repos::connection;
 use crate::repos::exchange_rates as exchange_rates_repo;
 use crate::services::currency::ExchangeRates;
 use crate::services::fx_memory::{get_memory_rates, set_memory_rates};
@@ -79,7 +80,7 @@ pub async fn get_exchange_rates(
         }
     }
 
-    let mut conn = pool.get().await?;
+    let mut conn = connection::neutral_connection(pool).await?;
     let cached = exchange_rates_repo::get_latest_snapshot(&mut conn).await?;
 
     if let Some(ref snapshot) = cached {

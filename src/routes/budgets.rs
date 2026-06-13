@@ -101,7 +101,7 @@ pub async fn create_budget(
     .await?;
     state
         .cache
-        .invalidate(InvalidationScope::BudgetChange, user.sub);
+        .invalidate(InvalidationScope::BudgetChange, user.sub).await;
     Ok(Json(budget_to_response(row, tags, 0)))
 }
 
@@ -150,7 +150,7 @@ pub async fn update_budget(
         .unwrap_or(0);
     state
         .cache
-        .invalidate(InvalidationScope::BudgetChange, user.sub);
+        .invalidate(InvalidationScope::BudgetChange, user.sub).await;
     Ok(Json(budget_to_response(row, tags, spent)))
 }
 
@@ -162,7 +162,7 @@ pub async fn delete_budget(
     budgets_repo::delete(&state.db_pool, user.sub, id).await?;
     state
         .cache
-        .invalidate(InvalidationScope::BudgetChange, user.sub);
+        .invalidate(InvalidationScope::BudgetChange, user.sub).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -245,7 +245,7 @@ pub async fn create_budget_expense(
         .ok_or(ApiError::NotFound)?;
     state
         .cache
-        .invalidate(InvalidationScope::BudgetChange, user.sub);
+        .invalidate(InvalidationScope::BudgetChange, user.sub).await;
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -264,6 +264,6 @@ pub async fn delete_budget_expense(
     }
     state
         .cache
-        .invalidate(InvalidationScope::BudgetChange, user.sub);
+        .invalidate(InvalidationScope::BudgetChange, user.sub).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }

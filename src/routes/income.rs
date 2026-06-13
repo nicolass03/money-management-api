@@ -58,7 +58,7 @@ pub async fn create_income(
     .await?;
     state
         .cache
-        .invalidate(InvalidationScope::IncomeChange, user.sub);
+        .invalidate(InvalidationScope::IncomeChange, user.sub).await;
     Ok(Json(row.into()))
 }
 
@@ -103,7 +103,7 @@ pub async fn update_income(
     .ok_or(ApiError::NotFound)?;
     state
         .cache
-        .invalidate(InvalidationScope::IncomeChange, user.sub);
+        .invalidate(InvalidationScope::IncomeChange, user.sub).await;
     Ok(Json(row.into()))
 }
 
@@ -123,7 +123,7 @@ pub async fn delete_income(
     income_repo::delete(&state.db_pool, user.sub, id).await?;
     state
         .cache
-        .invalidate(InvalidationScope::IncomeChange, user.sub);
+        .invalidate(InvalidationScope::IncomeChange, user.sub).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -134,6 +134,6 @@ pub async fn sync_scheduled(
     sync_all_scheduled_income(&state.db_pool, user.sub).await?;
     state
         .cache
-        .invalidate(InvalidationScope::IncomeChange, user.sub);
+        .invalidate(InvalidationScope::IncomeChange, user.sub).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }

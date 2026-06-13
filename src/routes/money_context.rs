@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::extract::{Query, State};
 use axum::Json;
 
@@ -11,7 +13,7 @@ pub async fn get_money_context(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Query(query): Query<MoneyContextQuery>,
-) -> Result<Json<MoneyContextResponse>, ApiError> {
+) -> Result<Json<Arc<MoneyContextResponse>>, ApiError> {
     if query.force_refresh && state.rate_limit_enabled {
         state
             .force_refresh_limiter
@@ -28,7 +30,7 @@ pub async fn get_money_context(
     if query.force_refresh {
         state
             .cache
-            .invalidate(InvalidationScope::MoneyContextRefresh, user.sub);
+            .invalidate(InvalidationScope::MoneyContextRefresh, user.sub).await;
     }
 
     Ok(Json(response))

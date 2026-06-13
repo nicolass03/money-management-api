@@ -16,6 +16,10 @@ pub struct Config {
     pub cache_enabled: bool,
     pub cache_max_entries: u64,
     pub db_pool_max_size: u32,
+    pub db_pool_min_idle: u32,
+    pub db_pool_connection_timeout: Duration,
+    pub db_pool_idle_timeout: Duration,
+    pub db_pool_max_lifetime: Duration,
 }
 
 impl Config {
@@ -68,10 +72,27 @@ impl Config {
             .parse::<u64>()
             .map_err(|_| "CACHE_MAX_ENTRIES must be a valid u64".to_string())?;
 
+        // Default kept low on purpose: the Supabase session-mode pooler caps total clients at its
+        // pool_size (default 15, shared across every instance). During a rolling deploy two
+        // instances run briefly, so worst-case is 2 × max_size — 6 keeps that (12) under the cap.
+        // Raise this only after raising the pooler's pool size in the Supabase dashboard.
         let db_pool_max_size = env::var("DB_POOL_MAX_SIZE")
-            .unwrap_or_else(|_| "10".to_string())
+            .unwrap_or_else(|_| "6".to_string())
             .parse::<u32>()
             .map_err(|_| "DB_POOL_MAX_SIZE must be a valid u32".to_string())?;
+
+        // Keep a few warm connections so the first requests after startup / an idle
+        // window don't pay TCP+TLS+auth setup latency. Clamped to max_size below.
+        let db_pool_min_idle = parse_u32_env("DB_POOL_MIN_IDLE", 2)?;
+        // Fail a checkout fast instead of hanging when the pool is exhausted.
+        let db_pool_connection_timeout =
+            Duration::from_secs(parse_u64_env("DB_POOL_CONNECTION_TIMEOUT_SECS", 5)?);
+        // Recycle connections that have been idle / alive too long (avoids stale
+        // server-side state and plays nicely with pgbouncer/Supabase reaping).
+        let db_pool_idle_timeout =
+            Duration::from_secs(parse_u64_env("DB_POOL_IDLE_TIMEOUT_SECS", 600)?);
+        let db_pool_max_lifetime =
+            Duration::from_secs(parse_u64_env("DB_POOL_MAX_LIFETIME_SECS", 1800)?);
 
         Ok(Self {
             host,
@@ -86,6 +107,10 @@ impl Config {
             cache_enabled,
             cache_max_entries,
             db_pool_max_size,
+            db_pool_min_idle,
+            db_pool_connection_timeout,
+            db_pool_idle_timeout,
+            db_pool_max_lifetime,
         })
     }
 
@@ -93,6 +118,26 @@ impl Config {
         format!("{}:{}", self.host, self.port)
             .parse()
             .map_err(|error| format!("invalid HOST/PORT: {error}"))
+    }
+}
+
+fn parse_u32_env(key: &str, default: u32) -> Result<u32, String> {
+    match env::var(key) {
+        Ok(value) => value
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| format!("{key} must be a valid u32")),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_u64_env(key: &str, default: u64) -> Result<u64, String> {
+    match env::var(key) {
+        Ok(value) => value
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("{key} must be a valid u64")),
+        Err(_) => Ok(default),
     }
 }
 

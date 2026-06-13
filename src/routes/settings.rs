@@ -66,7 +66,7 @@ pub async fn patch_settings(
 
     state
         .cache
-        .invalidate(InvalidationScope::SettingsChange, user.sub);
+        .invalidate(InvalidationScope::SettingsChange, user.sub).await;
 
     let response = settings_response(&state.db_pool, user.sub, row).await?;
     Ok(Json(response))

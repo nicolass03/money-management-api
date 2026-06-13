@@ -65,7 +65,7 @@ pub async fn create_schedule(
     .await?;
     state
         .cache
-        .invalidate(InvalidationScope::ScheduleChange, user.sub);
+        .invalidate(InvalidationScope::ScheduleChange, user.sub).await;
     Ok(Json(schedule.into()))
 }
 
@@ -107,7 +107,7 @@ pub async fn update_schedule(
     .ok_or(ApiError::NotFound)?;
     state
         .cache
-        .invalidate(InvalidationScope::ScheduleChange, user.sub);
+        .invalidate(InvalidationScope::ScheduleChange, user.sub).await;
     Ok(Json(schedule.into()))
 }
 
@@ -119,6 +119,6 @@ pub async fn delete_schedule(
     schedules_repo::delete(&state.db_pool, user.sub, id).await?;
     state
         .cache
-        .invalidate(InvalidationScope::ScheduleChange, user.sub);
+        .invalidate(InvalidationScope::ScheduleChange, user.sub).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }

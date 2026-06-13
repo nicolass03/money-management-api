@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use uuid::Uuid;
@@ -23,7 +25,7 @@ pub async fn get_expense_period_view(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Query(query): Query<ExpensePeriodViewQuery>,
-) -> Result<Json<crate::services::expense_period::ExpensePeriodViewResponse>, ApiError> {
+) -> Result<Json<Arc<crate::services::expense_period::ExpensePeriodViewResponse>>, ApiError> {
     let response = state
         .loader
         .expense_period_view(user.sub, &query.period, query.include_projected)
@@ -35,7 +37,7 @@ pub async fn get_upcoming_payable(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Query(query): Query<UpcomingPayableQuery>,
-) -> Result<Json<Vec<crate::services::upcoming_payable::PayableFutureItem>>, ApiError> {
+) -> Result<Json<Arc<Vec<crate::services::upcoming_payable::PayableFutureItem>>>, ApiError> {
     let items = state
         .loader
         .upcoming_payable(user.sub, query.horizon_days)
@@ -111,7 +113,7 @@ pub async fn create_expense(
     .await?;
     state
         .cache
-        .invalidate(InvalidationScope::ExpenseChange, user.sub);
+        .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -149,7 +151,7 @@ pub async fn patch_expense(
         .ok_or(ApiError::NotFound)?;
     state
         .cache
-        .invalidate(InvalidationScope::ExpenseChange, user.sub);
+        .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -169,7 +171,7 @@ pub async fn delete_expense(
     expenses_repo::delete(&state.db_pool, user.sub, id).await?;
     state
         .cache
-        .invalidate(InvalidationScope::ExpenseChange, user.sub);
+        .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -296,6 +298,6 @@ pub async fn early_pay_expense(
         .ok_or(ApiError::NotFound)?;
     state
         .cache
-        .invalidate(InvalidationScope::ExpenseChange, user.sub);
+        .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
     Ok(Json(expense_to_response(row, tags)))
 }
