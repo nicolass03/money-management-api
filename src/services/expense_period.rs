@@ -49,6 +49,24 @@ pub struct ExpensePeriodViewResponse {
     pub is_pay_period: bool,
     pub by_tag: Vec<TagAmountEntry>,
     pub subscription_split: SubscriptionSplit,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub extra_spend: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_spend_limit: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_spend_limit_currency: Option<CurrencyCode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_spend_limit_converted: Option<i32>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub planned_spend: i32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub planned_total: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_used_percent: Option<i32>,
+}
+
+fn is_zero(value: &i32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +139,92 @@ pub(crate) struct ExpensePeriodMaterialized {
     pub dated_budget_ids: HashSet<Uuid>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct PayPeriodStats {
+    extra_spend: i32,
+    extra_spend_limit: Option<i32>,
+    extra_spend_limit_currency: Option<CurrencyCode>,
+    extra_spend_limit_converted: Option<i32>,
+    planned_spend: i32,
+    planned_total: i32,
+    planned_used_percent: Option<i32>,
+}
+
+fn is_extra_expense_row(row: &ExpenseRow) -> bool {
+    row.recurring_id.is_none() && row.planned_expense_id.is_none() && row.budget_id.is_none()
+}
+
+fn is_planned_item(item: &ProjectionExpenseItem) -> bool {
+    item.recurring_id.is_some() || item.planned_expense_id.is_some() || item.budget_id.is_some()
+}
+
+pub(crate) fn compute_pay_period_stats(
+    expense_list: &[ExpenseWithTags],
+    all_items: &[ProjectionExpenseItem],
+    period: &PayPeriod,
+    extra_limit: Option<i32>,
+    extra_limit_currency: Option<CurrencyCode>,
+    display_currency: CurrencyCode,
+    rates: &ExchangeRates,
+) -> PayPeriodStats {
+    let extra_spend: i32 = expense_list
+        .iter()
+        .filter(|expense| {
+            let date = expense.row.date.format("%Y-%m-%d").to_string();
+            is_date_in_period(&date, period) && is_extra_expense_row(&expense.row)
+        })
+        .map(|expense| {
+            to_display(
+                expense.row.amount,
+                expense.row.currency,
+                display_currency,
+                rates,
+            )
+        })
+        .sum();
+
+    let mut planned_total = 0i32;
+    let mut planned_spend = 0i32;
+
+    for item in all_items {
+        if !is_planned_item(item) {
+            continue;
+        }
+        if item.is_budget_summary == Some(true) {
+            if let (Some(total), Some(spent)) = (item.budget_total, item.budget_spent) {
+                planned_total += to_display(total, item.currency, display_currency, rates);
+                planned_spend += to_display(spent, item.currency, display_currency, rates);
+            }
+        } else {
+            planned_total += item.converted_amount;
+            if !item.projected {
+                planned_spend += item.converted_amount;
+            }
+        }
+    }
+
+    let planned_used_percent = if planned_total > 0 {
+        Some(((planned_spend as f64 / planned_total as f64) * 100.0).round() as i32)
+    } else {
+        None
+    };
+
+    let extra_spend_limit_converted = match (extra_limit, extra_limit_currency) {
+        (Some(amount), Some(currency)) => Some(to_display(amount, currency, display_currency, rates)),
+        _ => None,
+    };
+
+    PayPeriodStats {
+        extra_spend,
+        extra_spend_limit: extra_limit,
+        extra_spend_limit_currency: extra_limit_currency,
+        extra_spend_limit_converted,
+        planned_spend,
+        planned_total,
+        planned_used_percent,
+    }
+}
+
 pub fn resolve_period_dates(
     period_key: ExpensePeriodKey,
     primary_schedule: Option<&IncomePayScheduleRow>,
@@ -156,6 +260,8 @@ pub fn build_expense_period_view(
     rates: &ExchangeRates,
     today: &str,
     include_projected: bool,
+    extra_expense_limit: Option<i32>,
+    extra_expense_limit_currency: Option<CurrencyCode>,
 ) -> Option<ExpensePeriodViewResponse> {
     let period = resolve_period_dates(period_key, primary_schedule, today)?;
     let expense_list = to_expense_with_tags(expenses);
@@ -165,7 +271,7 @@ pub fn build_expense_period_view(
     let materialized = build_expense_period_materialized(&expense_list, &budget_list);
 
     let is_pay_period = period_key == ExpensePeriodKey::LastPeriod;
-    let items = if is_pay_period {
+    let all_items = if is_pay_period {
         get_expense_items_in_period(
             &expense_list,
             &recurring_list,
@@ -191,10 +297,24 @@ pub fn build_expense_period_view(
         )
     };
 
-    let items = if include_projected {
-        items
+    let pay_period_stats = if is_pay_period {
+        compute_pay_period_stats(
+            &expense_list,
+            &all_items,
+            &period,
+            extra_expense_limit,
+            extra_expense_limit_currency,
+            display_currency,
+            rates,
+        )
     } else {
-        items
+        PayPeriodStats::default()
+    };
+
+    let items = if include_projected {
+        all_items
+    } else {
+        all_items
             .into_iter()
             .filter(|item| !item.projected)
             .collect()
@@ -220,6 +340,13 @@ pub fn build_expense_period_view(
         is_pay_period,
         by_tag: chart.by_tag,
         subscription_split: chart.subscription_split,
+        extra_spend: pay_period_stats.extra_spend,
+        extra_spend_limit: pay_period_stats.extra_spend_limit,
+        extra_spend_limit_currency: pay_period_stats.extra_spend_limit_currency,
+        extra_spend_limit_converted: pay_period_stats.extra_spend_limit_converted,
+        planned_spend: pay_period_stats.planned_spend,
+        planned_total: pay_period_stats.planned_total,
+        planned_used_percent: pay_period_stats.planned_used_percent,
     })
 }
 
@@ -661,4 +788,199 @@ pub(crate) fn to_budget_with_tags(budgets: &[(BudgetRow, Vec<String>, i32)]) -> 
             spent: *spent,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chrono::{NaiveDate, Utc};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::services::currency::ExchangeRates;
+    use crate::services::projections::ProjectionExpenseItem;
+
+    fn identity_rates() -> ExchangeRates {
+        ExchangeRates {
+            base: "USD".into(),
+            rates: HashMap::from([
+                ("USD".to_string(), 1.0),
+                ("EUR".to_string(), 1.0),
+                ("COP".to_string(), 1.0),
+            ]),
+            fetched_at: "2025-01-01".into(),
+        }
+    }
+
+    fn pay_period() -> PayPeriod {
+        PayPeriod {
+            pay_date: "2025-06-15".into(),
+            start_date: "2025-06-01".into(),
+            end_date: "2025-06-30".into(),
+        }
+    }
+
+    fn expense_row(
+        amount: i32,
+        date: &str,
+        recurring_id: Option<Uuid>,
+        planned_expense_id: Option<Uuid>,
+        budget_id: Option<Uuid>,
+    ) -> ExpenseRow {
+        ExpenseRow {
+            id: Uuid::new_v4(),
+            _user_id: Uuid::new_v4(),
+            name: "test".into(),
+            amount,
+            currency: CurrencyCode::Usd,
+            date: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
+            scheduled_date: None,
+            recurring_id,
+            planned_expense_id,
+            budget_id,
+            amount_overridden: false,
+            is_subscription: false,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn projection_item(
+        converted_amount: i32,
+        projected: bool,
+        recurring_id: Option<Uuid>,
+        budget_total: Option<i32>,
+        budget_spent: Option<i32>,
+        is_budget_summary: bool,
+    ) -> ProjectionExpenseItem {
+        ProjectionExpenseItem {
+            id: None,
+            recurring_id,
+            planned_expense_id: None,
+            budget_id: if is_budget_summary {
+                Some(Uuid::new_v4())
+            } else {
+                recurring_id
+            },
+            budget_total,
+            budget_spent,
+            is_budget_summary: is_budget_summary.then_some(true),
+            name: "item".into(),
+            date: "2025-06-10".into(),
+            scheduled_date: None,
+            amount: converted_amount,
+            currency: CurrencyCode::Usd,
+            original_amount: None,
+            original_currency: None,
+            converted_amount,
+            tags: vec![],
+            is_subscription: false,
+            projected,
+        }
+    }
+
+    #[test]
+    fn extra_spend_counts_only_manual_expenses() {
+        let period = pay_period();
+        let expenses = vec![
+            ExpenseWithTags {
+                row: expense_row(1000, "2025-06-10", None, None, None),
+                tags: vec![],
+            },
+            ExpenseWithTags {
+                row: expense_row(500, "2025-06-12", Some(Uuid::new_v4()), None, None),
+                tags: vec![],
+            },
+            ExpenseWithTags {
+                row: expense_row(200, "2025-07-01", None, None, None),
+                tags: vec![],
+            },
+        ];
+
+        let stats = compute_pay_period_stats(
+            &expenses,
+            &[],
+            &period,
+            None,
+            None,
+            CurrencyCode::Usd,
+            &identity_rates(),
+        );
+
+        assert_eq!(stats.extra_spend, 1000);
+    }
+
+    #[test]
+    fn planned_used_percent_includes_projected_in_total() {
+        let stats = compute_pay_period_stats(
+            &[],
+            &[
+                projection_item(3000, false, Some(Uuid::new_v4()), None, None, false),
+                projection_item(2000, true, Some(Uuid::new_v4()), None, None, false),
+            ],
+            &pay_period(),
+            None,
+            None,
+            CurrencyCode::Usd,
+            &identity_rates(),
+        );
+
+        assert_eq!(stats.planned_spend, 3000);
+        assert_eq!(stats.planned_total, 5000);
+        assert_eq!(stats.planned_used_percent, Some(60));
+    }
+
+    #[test]
+    fn budget_summary_uses_budget_totals() {
+        let stats = compute_pay_period_stats(
+            &[],
+            &[projection_item(
+                4000,
+                false,
+                None,
+                Some(10_000),
+                Some(4000),
+                true,
+            )],
+            &pay_period(),
+            None,
+            None,
+            CurrencyCode::Usd,
+            &identity_rates(),
+        );
+
+        assert_eq!(stats.planned_spend, 4000);
+        assert_eq!(stats.planned_total, 10_000);
+        assert_eq!(stats.planned_used_percent, Some(40));
+    }
+
+    #[test]
+    fn zero_planned_total_yields_none_percent() {
+        let stats = compute_pay_period_stats(
+            &[],
+            &[],
+            &pay_period(),
+            None,
+            None,
+            CurrencyCode::Usd,
+            &identity_rates(),
+        );
+
+        assert!(stats.planned_used_percent.is_none());
+    }
+
+    #[test]
+    fn extra_limit_converts_to_display_currency() {
+        let stats = compute_pay_period_stats(
+            &[],
+            &[],
+            &pay_period(),
+            Some(5000),
+            Some(CurrencyCode::Usd),
+            CurrencyCode::Usd,
+            &identity_rates(),
+        );
+
+        assert_eq!(stats.extra_spend_limit_converted, Some(5000));
+    }
 }

@@ -16,6 +16,8 @@ fn settings_row(user_id: Uuid, revision: i64) -> UserSettingsRow {
         projection_start_date: None,
         updated_at: chrono::Utc::now(),
         cache_revision: revision,
+        extra_expense_limit: None,
+        extra_expense_limit_currency: None,
     }
 }
 

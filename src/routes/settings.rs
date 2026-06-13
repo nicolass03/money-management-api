@@ -9,7 +9,8 @@ use crate::models::{UserSettingsResponse, UserSettingsRow};
 use crate::repos::{income_schedules, settings as settings_repo};
 use crate::state::AppState;
 use crate::validation::{
-    parse_currency, parse_date, regex_like_date, require_projection_free_money,
+    parse_currency, parse_date, regex_like_date, require_non_negative_amount,
+    require_projection_free_money,
 };
 
 pub async fn get_settings(
@@ -54,6 +55,12 @@ pub async fn patch_settings(
         None => None,
     };
 
+    let (extra_expense_limit, extra_expense_limit_currency) =
+        parse_extra_expense_limit_patch(
+            body.extra_expense_limit,
+            body.extra_expense_limit_currency,
+        )?;
+
     let row = settings_repo::update_user_settings(
         &state.db_pool,
         user.sub,
@@ -61,6 +68,8 @@ pub async fn patch_settings(
         body.primary_schedule_id,
         projection_initial_free_money,
         projection_start_date,
+        extra_expense_limit,
+        extra_expense_limit_currency,
     )
     .await?;
 
@@ -83,4 +92,26 @@ async fn settings_response(
         None
     };
     Ok(UserSettingsResponse::from_row(row, primary_schedule))
+}
+
+fn parse_extra_expense_limit_patch(
+    limit: Option<Option<i32>>,
+    currency: Option<Option<String>>,
+) -> Result<(Option<Option<i32>>, Option<Option<crate::models::CurrencyCode>>), ApiError> {
+    match (limit, currency) {
+        (None, None) => Ok((None, None)),
+        (Some(limit), Some(currency)) => match (limit, currency) {
+            (None, None) => Ok((Some(None), Some(None))),
+            (Some(amount), Some(ref code)) => {
+                let parsed = parse_currency(code)?;
+                Ok((Some(Some(require_non_negative_amount(amount)?)), Some(Some(parsed))))
+            }
+            _ => Err(ApiError::BadRequest(
+                "extra expense limit requires both amount and currency".into(),
+            )),
+        },
+        _ => Err(ApiError::BadRequest(
+            "extra expense limit requires both amount and currency".into(),
+        )),
+    }
 }

@@ -69,6 +69,13 @@ pub fn require_projection_free_money(amount: i32) -> Result<i32, ApiError> {
     Ok(amount)
 }
 
+pub fn require_non_negative_amount(amount: i32) -> Result<i32, ApiError> {
+    if amount < 0 || amount > MAX_AMOUNT {
+        return Err(ApiError::BadRequest("invalid amount".into()));
+    }
+    Ok(amount)
+}
+
 pub fn parse_tag_names(tags: &[String]) -> Result<Vec<String>, ApiError> {
     if tags.len() > MAX_TAGS {
         return Err(ApiError::BadRequest("too many tags".into()));

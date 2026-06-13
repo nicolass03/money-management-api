@@ -301,6 +301,8 @@ impl UserDataLoader {
             &rates,
             &today,
             include_projected,
+            user_settings.extra_expense_limit,
+            user_settings.extra_expense_limit_currency,
         )
         .ok_or_else(|| {
             ApiError::BadRequest("set a primary pay schedule in settings for pay-period view".into())

@@ -70,6 +70,8 @@ pub struct UserSettingsRow {
     pub projection_start_date: Option<NaiveDate>,
     pub updated_at: DateTime<Utc>,
     pub cache_revision: i64,
+    pub extra_expense_limit: Option<i32>,
+    pub extra_expense_limit_currency: Option<CurrencyCode>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -206,6 +208,10 @@ pub struct UserSettingsResponse {
     pub primary_schedule: Option<IncomePayScheduleResponse>,
     pub projection_initial_free_money: i32,
     pub projection_start_date: Option<NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_expense_limit: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_expense_limit_currency: Option<CurrencyCode>,
     pub cache_revision: i64,
     pub updated_at: DateTime<Utc>,
 }
@@ -222,6 +228,8 @@ impl UserSettingsResponse {
             primary_schedule: primary_schedule.map(IncomePayScheduleResponse::from),
             projection_initial_free_money: row.projection_initial_free_money,
             projection_start_date: row.projection_start_date,
+            extra_expense_limit: row.extra_expense_limit,
+            extra_expense_limit_currency: row.extra_expense_limit_currency,
             cache_revision: row.cache_revision,
             updated_at: row.updated_at,
         }
