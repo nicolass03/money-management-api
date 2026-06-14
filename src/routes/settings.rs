@@ -9,7 +9,8 @@ use crate::models::{UserSettingsResponse, UserSettingsRow};
 use crate::repos::{income_schedules, settings as settings_repo};
 use crate::state::AppState;
 use crate::validation::{
-    parse_currency, parse_date, regex_like_date, require_projection_free_money,
+    parse_currency, parse_date, regex_like_date, require_extra_spent_limit,
+    require_projection_free_money,
 };
 
 pub async fn get_settings(
@@ -54,6 +55,12 @@ pub async fn patch_settings(
         None => None,
     };
 
+    let extra_spent_limit = match body.extra_spent_limit {
+        Some(Some(value)) => Some(Some(require_extra_spent_limit(value)?)),
+        Some(None) => Some(None),
+        None => None,
+    };
+
     let row = settings_repo::update_user_settings(
         &state.db_pool,
         user.sub,
@@ -61,6 +68,7 @@ pub async fn patch_settings(
         body.primary_schedule_id,
         projection_initial_free_money,
         projection_start_date,
+        extra_spent_limit,
     )
     .await?;
 

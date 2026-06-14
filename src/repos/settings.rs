@@ -56,6 +56,7 @@ pub async fn update_user_settings(
     primary_schedule_id: Option<Option<Uuid>>,
     projection_initial_free_money: Option<i32>,
     projection_start_date: Option<Option<chrono::NaiveDate>>,
+    extra_spent_limit: Option<Option<i32>>,
 ) -> Result<UserSettingsRow, ApiError> {
     get_user_settings(pool, user_id).await?;
     let mut conn = connection::user_connection(pool, user_id).await?;
@@ -84,6 +85,12 @@ pub async fn update_user_settings(
             if let Some(start_date) = projection_start_date {
                 diesel::update(user_settings::table.find(user_id))
                     .set(user_settings::projection_start_date.eq(start_date))
+                    .execute(conn)
+                    .await?;
+            }
+            if let Some(limit) = extra_spent_limit {
+                diesel::update(user_settings::table.find(user_id))
+                    .set(user_settings::extra_spent_limit.eq(limit))
                     .execute(conn)
                     .await?;
             }

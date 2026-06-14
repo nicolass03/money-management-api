@@ -49,6 +49,13 @@ pub struct ExpensePeriodViewResponse {
     pub is_pay_period: bool,
     pub by_tag: Vec<TagAmountEntry>,
     pub subscription_split: SubscriptionSplit,
+    /// Actual unplanned ("extra") spend in the period: persisted expenses not tied to a
+    /// recurring, planned, or budget source, converted to the display currency. Always computed
+    /// from raw expense rows (never projected items) so it reflects money actually spent.
+    pub extra_spent: i32,
+    /// The user's configured extra-spent limit in display-currency minor units, or `None` when
+    /// unset. Clients only surface the limit comparison for the pay period (`is_pay_period`).
+    pub extra_spent_limit: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +163,7 @@ pub fn build_expense_period_view(
     rates: &ExchangeRates,
     today: &str,
     include_projected: bool,
+    extra_spent_limit: Option<i32>,
 ) -> Option<ExpensePeriodViewResponse> {
     let period = resolve_period_dates(period_key, primary_schedule, today)?;
     let expense_list = to_expense_with_tags(expenses);
@@ -213,6 +221,8 @@ pub fn build_expense_period_view(
         rates,
     );
 
+    let extra_spent = compute_extra_spent(expenses, &period, display_currency, rates);
+
     Some(ExpensePeriodViewResponse {
         period: period.into(),
         items,
@@ -220,7 +230,34 @@ pub fn build_expense_period_view(
         is_pay_period,
         by_tag: chart.by_tag,
         subscription_split: chart.subscription_split,
+        extra_spent,
+        extra_spent_limit,
     })
+}
+
+/// Sums actual unplanned ("extra") spend in the resolved period: persisted expense rows whose
+/// `recurring_id`, `planned_expense_id`, and `budget_id` are all `None`, converted to the display
+/// currency. This intentionally reads the raw expense rows rather than the period `items` so it is
+/// unaffected by `include_projected` and budget-summary aggregation.
+fn compute_extra_spent(
+    expenses: &[(ExpenseRow, Vec<String>)],
+    period: &PayPeriod,
+    display_currency: CurrencyCode,
+    rates: &ExchangeRates,
+) -> i32 {
+    expenses
+        .iter()
+        .filter(|(row, _)| {
+            row.recurring_id.is_none()
+                && row.planned_expense_id.is_none()
+                && row.budget_id.is_none()
+        })
+        .filter(|(row, _)| {
+            let date = row.date.format("%Y-%m-%d").to_string();
+            is_date_in_period(&date, period)
+        })
+        .map(|(row, _)| convert_amount(row.amount, row.currency, display_currency, rates))
+        .sum()
 }
 
 pub fn build_chart_summary(
@@ -330,7 +367,7 @@ pub(crate) fn get_expense_items_in_period(
             id: Some(expense.row.id),
             recurring_id: expense.row.recurring_id,
             planned_expense_id: expense.row.planned_expense_id,
-            budget_id: None,
+            budget_id: expense.row.budget_id,
             budget_total: None,
             budget_spent: None,
             is_budget_summary: None,
@@ -570,7 +607,7 @@ fn get_actual_expenses_in_date_range(
                 id: Some(expense.row.id),
                 recurring_id: expense.row.recurring_id,
                 planned_expense_id: expense.row.planned_expense_id,
-                budget_id: None,
+                budget_id: expense.row.budget_id,
                 budget_total: None,
                 budget_spent: None,
                 is_budget_summary: None,
@@ -661,4 +698,88 @@ pub(crate) fn to_budget_with_tags(budgets: &[(BudgetRow, Vec<String>, i32)]) -> 
             spent: *spent,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{NaiveDate, Utc};
+    use std::collections::HashMap;
+
+    fn empty_rates() -> ExchangeRates {
+        ExchangeRates {
+            base: "usd".to_string(),
+            rates: HashMap::new(),
+            fetched_at: "2026-06-14".to_string(),
+        }
+    }
+
+    fn period() -> PayPeriod {
+        PayPeriod {
+            pay_date: "2026-06-30".to_string(),
+            start_date: "2026-06-01".to_string(),
+            end_date: "2026-06-30".to_string(),
+        }
+    }
+
+    fn expense(amount: i32, date: &str) -> (ExpenseRow, Vec<String>) {
+        (
+            ExpenseRow {
+                id: Uuid::new_v4(),
+                _user_id: Uuid::new_v4(),
+                name: "test".to_string(),
+                amount,
+                currency: CurrencyCode::Usd,
+                date: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
+                scheduled_date: None,
+                recurring_id: None,
+                planned_expense_id: None,
+                budget_id: None,
+                amount_overridden: false,
+                is_subscription: false,
+                created_at: Utc::now(),
+            },
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn extra_spent_sums_only_manual_in_period() {
+        let mut manual = expense(1000, "2026-06-10");
+        let mut recurring = expense(2000, "2026-06-11");
+        recurring.0.recurring_id = Some(Uuid::new_v4());
+        let mut planned = expense(3000, "2026-06-12");
+        planned.0.planned_expense_id = Some(Uuid::new_v4());
+        let mut budgeted = expense(4000, "2026-06-13");
+        budgeted.0.budget_id = Some(Uuid::new_v4());
+        let another_manual = expense(500, "2026-06-14");
+
+        let expenses = vec![manual, recurring, planned, budgeted, another_manual];
+
+        let total = compute_extra_spent(&expenses, &period(), CurrencyCode::Usd, &empty_rates());
+        assert_eq!(total, 1500);
+    }
+
+    #[test]
+    fn extra_spent_excludes_out_of_period() {
+        let inside = expense(1000, "2026-06-10");
+        let before = expense(9999, "2026-05-31");
+        let after = expense(8888, "2026-07-01");
+
+        let expenses = vec![inside, before, after];
+
+        let total = compute_extra_spent(&expenses, &period(), CurrencyCode::Usd, &empty_rates());
+        assert_eq!(total, 1000);
+    }
+
+    #[test]
+    fn extra_spent_is_zero_without_manual() {
+        let mut recurring = expense(2000, "2026-06-11");
+        recurring.0.recurring_id = Some(Uuid::new_v4());
+
+        let expenses = vec![recurring];
+
+        let total = compute_extra_spent(&expenses, &period(), CurrencyCode::Usd, &empty_rates());
+        assert_eq!(total, 0);
+    }
 }

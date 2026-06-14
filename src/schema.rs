@@ -201,6 +201,7 @@ diesel::table! {
         user_id -> Uuid,
         primary_schedule_id -> Nullable<Uuid>,
         cache_revision -> Int8,
+        extra_spent_limit -> Nullable<Int4>,
     }
 }
 

@@ -69,6 +69,16 @@ pub fn require_projection_free_money(amount: i32) -> Result<i32, ApiError> {
     Ok(amount)
 }
 
+/// Validates an extra-spent limit. The limit is an optional positive amount (in display-currency
+/// minor units); `None` clears it. Zero is rejected so an unset limit and a zero limit can't be
+/// confused — clearing the limit is expressed by `null`, not `0`.
+pub fn require_extra_spent_limit(amount: i32) -> Result<i32, ApiError> {
+    if amount <= 0 || amount > MAX_AMOUNT {
+        return Err(ApiError::BadRequest("invalid extra spent limit".into()));
+    }
+    Ok(amount)
+}
+
 pub fn parse_tag_names(tags: &[String]) -> Result<Vec<String>, ApiError> {
     if tags.len() > MAX_TAGS {
         return Err(ApiError::BadRequest("too many tags".into()));
