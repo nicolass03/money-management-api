@@ -93,6 +93,8 @@ diesel::table! {
         user_id -> Uuid,
         id -> Uuid,
         schedule_id -> Nullable<Uuid>,
+        amount_overridden -> Bool,
+        deleted_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -202,6 +204,7 @@ diesel::table! {
         primary_schedule_id -> Nullable<Uuid>,
         cache_revision -> Int8,
         extra_spent_limit -> Nullable<Int4>,
+        language -> Text,
     }
 }
 

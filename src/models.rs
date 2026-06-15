@@ -65,6 +65,7 @@ pub enum IncomeSource {
 pub struct UserSettingsRow {
     pub user_id: Uuid,
     pub display_currency: CurrencyCode,
+    pub language: String,
     pub primary_schedule_id: Option<Uuid>,
     pub projection_initial_free_money: i32,
     pub projection_start_date: Option<NaiveDate>,
@@ -100,6 +101,9 @@ pub struct IncomeRow {
     pub date: NaiveDate,
     pub schedule_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
+    #[diesel(column_name = amount_overridden)]
+    pub _amount_overridden: bool,
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -202,6 +206,7 @@ pub struct ExchangeRateSnapshotRow {
 pub struct UserSettingsResponse {
     pub id: Uuid,
     pub display_currency: CurrencyCode,
+    pub language: String,
     pub primary_schedule_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_schedule: Option<IncomePayScheduleResponse>,
@@ -220,6 +225,7 @@ impl UserSettingsResponse {
         Self {
             id: row.user_id,
             display_currency: row.display_currency,
+            language: row.language,
             primary_schedule_id: row.primary_schedule_id,
             primary_schedule: primary_schedule.map(IncomePayScheduleResponse::from),
             projection_initial_free_money: row.projection_initial_free_money,

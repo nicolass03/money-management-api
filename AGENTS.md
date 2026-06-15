@@ -39,12 +39,24 @@ Read-heavy endpoints use a revision-keyed **moka** cache (`src/cache/`). `user_s
 - **Extra spent / limit** (`extra_spent_limit` on `user_settings`, nullable int, display-currency minor units): `extraSpent` in the period-view response is the sum of **persisted** expenses in the resolved period whose `recurring_id`, `planned_expense_id`, and `budget_id` are **all NULL** (i.e. manual/unplanned spend), converted to display currency. It is computed from raw expense rows in `compute_extra_spent` (`services/expense_period.rs`), **not** from `items`, so it ignores `includeProjected` and budget-summary aggregation. `extraSpentLimit` echoes the user's setting. The limit is informational only (no enforcement on expense creation). Clients only surface the `/ limit` comparison and warning colors for the pay period (`isPayPeriod`); calendar ranges (`last-month`, `last-3-months`) show `extraSpent` alone. Individual persisted expense rows in `items` must echo `budget_id` from the DB row (do not zero it out) so clients can distinguish budget-linked charges from manual `extra` spend — dated-budget line items are still omitted from `items` on the pay period when a budget summary row is shown.
 - `GET /expenses/upcoming-payable?horizonDays=30` — upcoming recurring/planned payables (moka keyed by horizon + revision + day).
 - `GET /settings` embeds `primarySchedule` when `primaryScheduleId` is set (avoids separate income-schedule fetch on tab init).
+- `GET /settings` includes `language` (`en` | `es`) from `user_settings.language`; `PATCH /settings` accepts `language` and validates to that fixed set.
 - `GET /projections?includePast=false` — omits past rows from response (default `includePast=true` for web backward compat). Full projection rows remain in moka cache; filter applied on read.
 - `GET /settings` exposes `cacheRevision` for client foreground sync (iOS compares on app resume).
 
 Exchange rates also use an in-memory layer (`src/services/fx_memory.rs`) atop the existing `exchange_rate_snapshots` table. Auth skips `ensure_user_exists` after first successful upsert per process (`AppState.known_users`).
 
 Multi-replica deploys: DB revision gives correctness without Redis; each replica holds independent memory until TTL/eviction.
+
+## Income materialization (parity with recurring expenses)
+
+Scheduled income is **materialized by the daily cron**, not pre-synced. `jobs/daily_expenses.rs` now runs both `charge_due_expenses_for_date` and `charge_due_income_for_date` under the same advisory lock; income creation invalidates `IncomeChange` separately. There is **no** `sync_scheduled_income` service and **no** `POST /income/sync-scheduled` route anymore (both removed). Schedule create/update only bump `cache_revision`; they do **not** write `income` rows.
+
+- **No backfill:** creating a schedule does not retro-create past pay rows (matches recurring expenses). Past income that predates a schedule must be added manually.
+- **Idempotency:** the cron skips a schedule when an `income` row already exists for `(schedule_id, date)` — including soft-deleted tombstones — and treats the `income_scheduled_schedule_date_unique` violation as a no-op (`charge_due_income.rs`).
+- **`income.amount_overridden` / `income.deleted_at`** (migration `20260615190000_income_materialization`): amount edits on a materialized scheduled row set `amount_overridden`; deletes on scheduled rows are **soft deletes** (set `deleted_at`). The tombstone keeps the `(schedule_id, date)` slot occupied so the cron never resurrects a deleted occurrence. **Do not** hard-delete scheduled income or you reintroduce the resurrection bug. `IncomeRow._amount_overridden` is prefixed `_` (mapped via `#[diesel(column_name)]`) because it is written but never read in Rust.
+- **Edit/delete rules** (`routes/income.rs`): manual income → full edit (`update`) + hard delete; scheduled income → amount-only override (`update_amount`, schedule-owned name/date/currency untouched) + soft delete (`soft_delete`).
+- **Repo reads:** `income::list_all*` returns **active** rows only (`deleted_at IS NULL`) for `GET /income`; `list_with_deleted_with_conn` returns tombstones too and is used **only** by projections.
+- **Projections** (`services/projections.rs`): `income_total` = active persisted rows in the period **plus** projected future occurrences (`date >= today`) from **every** pay schedule (not just primary) whose `(schedule_id, date)` is neither materialized nor tombstoned. The migration deletes pre-synced **future** `source='scheduled'` rows so the cron/projection becomes the single source of truth; past materialized rows are kept. The `income` migration must be applied (`./scripts/migrate.sh`) before running the API, or `GET /income`/projections fail on the missing columns.
 
 ## Railway deployment
 

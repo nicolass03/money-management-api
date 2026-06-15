@@ -197,7 +197,15 @@ impl UserDataLoader {
         };
 
         let rates = get_exchange_rates(&self.pool, false).await?;
-        let income_entries = income::list_all_with_conn(&mut conn, user_id).await?;
+        // Projections need every pay schedule (income can come from non-primary schedules)
+        // and tombstoned rows so deleted scheduled occurrences are not re-projected.
+        let schedules = income_schedules::list_all(&self.pool, user_id).await?;
+        let income_all = income::list_with_deleted_with_conn(&mut conn, user_id).await?;
+        let income_active: Vec<crate::models::IncomeRow> = income_all
+            .iter()
+            .filter(|row| row.deleted_at.is_none())
+            .cloned()
+            .collect();
         let expense_rows = expenses::list_with_tags_with_conn(&mut conn, user_id).await?;
         let recurring = recurring_expenses::list_with_tags_with_conn(&mut conn, user_id).await?;
         let planned = planned_expenses::list_with_tags_with_conn(&mut conn, user_id).await?;
@@ -205,7 +213,7 @@ impl UserDataLoader {
             budgets::list_with_tags_and_spent_with_conn(&mut conn, user_id).await?;
 
         self.cache
-            .set_income(user_id, revision, income_entries.clone())
+            .set_income(user_id, revision, income_active)
             .await;
         self.cache
             .set_expenses(user_id, revision, expense_rows.clone())
@@ -227,7 +235,8 @@ impl UserDataLoader {
 
         let rows = build_projection_rows(
             &primary_schedule,
-            &income_entries,
+            &schedules,
+            &income_all,
             &expense_rows,
             &recurring,
             &planned,

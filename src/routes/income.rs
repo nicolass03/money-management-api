@@ -8,7 +8,6 @@ use crate::dto::{CreateIncomeRequest, UpdateIncomeRequest};
 use crate::error::ApiError;
 use crate::models::{IncomeResponse, IncomeSource, is_manual_income};
 use crate::repos::income as income_repo;
-use crate::services::sync_scheduled_income::sync_all_scheduled_income;
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, require_non_empty_name, require_positive_amount,
@@ -82,25 +81,32 @@ pub async fn update_income(
     let existing = income_repo::find_by_id(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    if !is_manual_income(&existing) {
-        return Err(ApiError::BadRequest(
-            "scheduled income cannot be edited here".into(),
-        ));
-    }
-    let (name, amount, currency, date) =
-        validate_income(&body.name, body.amount, &body.currency, &body.date)?;
-    let row = income_repo::update(
-        &state.db_pool,
-        user.sub,
-        id,
-        &name,
-        amount,
-        currency,
-        IncomeSource::Manual,
-        date,
-    )
-    .await?
-    .ok_or(ApiError::NotFound)?;
+
+    let row = if is_manual_income(&existing) {
+        // Manual income: full edit (name, amount, currency, date).
+        let (name, amount, currency, date) =
+            validate_income(&body.name, body.amount, &body.currency, &body.date)?;
+        income_repo::update(
+            &state.db_pool,
+            user.sub,
+            id,
+            &name,
+            amount,
+            currency,
+            IncomeSource::Manual,
+            date,
+        )
+        .await?
+        .ok_or(ApiError::NotFound)?
+    } else {
+        // Materialized scheduled income: amount-only override, keeping schedule-owned
+        // name/date/currency (parity with editing a recurring expense's amount).
+        let amount = require_positive_amount(body.amount)?;
+        income_repo::update_amount(&state.db_pool, user.sub, id, amount)
+            .await?
+            .ok_or(ApiError::NotFound)?
+    };
+
     state
         .cache
         .invalidate(InvalidationScope::IncomeChange, user.sub).await;
@@ -115,23 +121,15 @@ pub async fn delete_income(
     let existing = income_repo::find_by_id(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    if !is_manual_income(&existing) {
-        return Err(ApiError::BadRequest(
-            "scheduled income cannot be deleted here".into(),
-        ));
-    }
-    income_repo::delete(&state.db_pool, user.sub, id).await?;
-    state
-        .cache
-        .invalidate(InvalidationScope::IncomeChange, user.sub).await;
-    Ok(Json(serde_json::json!({ "success": true })))
-}
 
-pub async fn sync_scheduled(
-    State(state): State<AppState>,
-    AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    sync_all_scheduled_income(&state.db_pool, user.sub).await?;
+    if is_manual_income(&existing) {
+        // Manual income: hard delete.
+        income_repo::delete(&state.db_pool, user.sub, id).await?;
+    } else {
+        // Materialized scheduled income: soft delete so the cron does not resurrect it.
+        income_repo::soft_delete(&state.db_pool, user.sub, id).await?;
+    }
+
     state
         .cache
         .invalidate(InvalidationScope::IncomeChange, user.sub).await;

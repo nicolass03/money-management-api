@@ -66,7 +66,6 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
             "/income",
             get(routes::income::list_income).post(routes::income::create_income),
         )
-        .route("/income/sync-scheduled", post(routes::income::sync_scheduled))
         .route(
             "/income/{id}",
             get(routes::income::get_income)

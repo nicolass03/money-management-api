@@ -11,12 +11,16 @@ use crate::config::Config;
 use crate::error::ApiError;
 use crate::repos::{connection, users};
 use crate::services::charge_due_expenses::charge_due_expenses_for_date;
+use crate::services::charge_due_income::charge_due_income_for_date;
 use crate::state::DbPool;
 use crate::validation::today_iso;
 
-/// Advisory lock key for the daily expenses job (arbitrary stable id).
+/// Advisory lock key for the daily materialization job (arbitrary stable id).
 const DAILY_EXPENSES_LOCK_KEY: i64 = 8_451_903_221;
 
+/// Materializes both due recurring expenses and due scheduled income for today.
+/// Income mirrors the recurring-expense flow: due occurrences become actual rows on
+/// their pay date, and each resource invalidates its own cache scope independently.
 pub async fn run_daily_expenses(
     pool: &DbPool,
     cache: Option<&UserDataCache>,
@@ -25,13 +29,21 @@ pub async fn run_daily_expenses(
     let user_ids = users::list_user_ids(pool).await?;
     let mut created = 0;
     for user_id in user_ids {
-        let user_created = charge_due_expenses_for_date(pool, user_id, &date).await?;
-        if user_created > 0 {
+        let expenses_created = charge_due_expenses_for_date(pool, user_id, &date).await?;
+        if expenses_created > 0 {
             if let Some(cache) = cache {
                 cache.invalidate(InvalidationScope::ExpenseChange, user_id).await;
             }
         }
-        created += user_created;
+
+        let income_created = charge_due_income_for_date(pool, user_id, &date).await?;
+        if income_created > 0 {
+            if let Some(cache) = cache {
+                cache.invalidate(InvalidationScope::IncomeChange, user_id).await;
+            }
+        }
+
+        created += expenses_created + income_created;
     }
     Ok((date, created))
 }

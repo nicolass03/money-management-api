@@ -1,4 +1,8 @@
+use std::collections::HashSet;
+
+use chrono::NaiveDate;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::models::{
     BudgetRow, CurrencyCode, ExpenseRow, IncomePayScheduleRow, IncomeRow, PlannedExpenseRow,
@@ -10,8 +14,8 @@ use crate::services::expense_period::{
     to_expense_with_tags, to_planned_with_tags, to_recurring_with_tags, GetExpenseItemsOptions,
 };
 use crate::services::pay_periods::{
-    get_projection_periods, is_date_in_period, schedule_from_income, PayPeriod,
-    PROJECTION_MONTHS_FORWARD,
+    get_pay_dates_in_range, get_projection_periods, is_date_in_period, schedule_from_income,
+    PayPeriod, PROJECTION_MONTHS_FORWARD,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +67,7 @@ pub struct ProjectionRow {
 
 struct BuildProjectionInput<'a> {
     primary_schedule: &'a IncomePayScheduleRow,
+    schedules: &'a [IncomePayScheduleRow],
     income_entries: &'a [IncomeRow],
     expenses: &'a [(ExpenseRow, Vec<String>)],
     recurring_expenses: &'a [(RecurringExpenseRow, Vec<String>)],
@@ -113,6 +118,7 @@ fn sum_income_in_period(
 ) -> i32 {
     entries
         .iter()
+        .filter(|entry| entry.deleted_at.is_none())
         .filter(|entry| {
             let date = entry.date.format("%Y-%m-%d").to_string();
             is_date_in_period(&date, period)
@@ -123,8 +129,51 @@ fn sum_income_in_period(
         .sum()
 }
 
+/// `(schedule_id, date)` slots that already have a materialized income row — including
+/// soft-deleted tombstones — so a future occurrence is projected at most once and a
+/// deleted occurrence is never resurrected.
+fn scheduled_income_keys(entries: &[IncomeRow]) -> HashSet<(Uuid, NaiveDate)> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.schedule_id.map(|sid| (sid, entry.date)))
+        .collect()
+}
+
+/// Projected scheduled income for a period: future pay-date occurrences (on or after
+/// `today`) from every pay schedule that have not yet been materialized or tombstoned.
+/// Past/current occurrences come from persisted rows via `sum_income_in_period`, mirroring
+/// how expenses treat past periods as actual and future periods as projected.
+fn projected_income_in_period(
+    schedules: &[IncomePayScheduleRow],
+    period: &PayPeriod,
+    materialized: &HashSet<(Uuid, NaiveDate)>,
+    display_currency: CurrencyCode,
+    rates: &ExchangeRates,
+    today: &str,
+) -> i32 {
+    let mut total = 0;
+    for schedule in schedules {
+        let input = schedule_from_income(schedule);
+        for date_str in get_pay_dates_in_range(&input, &period.start_date, &period.end_date) {
+            if date_str.as_str() < today {
+                continue;
+            }
+            let Ok(date) = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") else {
+                continue;
+            };
+            if materialized.contains(&(schedule.id, date)) {
+                continue;
+            }
+            total += to_display(schedule.amount, schedule.currency, display_currency, rates);
+        }
+    }
+    total
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn build_projection_rows(
     primary_schedule: &IncomePayScheduleRow,
+    schedules: &[IncomePayScheduleRow],
     income_entries: &[IncomeRow],
     expenses: &[(ExpenseRow, Vec<String>)],
     recurring_expenses: &[(RecurringExpenseRow, Vec<String>)],
@@ -138,6 +187,7 @@ pub fn build_projection_rows(
 ) -> Vec<ProjectionRow> {
     let input = BuildProjectionInput {
         primary_schedule,
+        schedules,
         income_entries,
         expenses,
         recurring_expenses,
@@ -169,6 +219,7 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
 
     let mut running_balance = input.initial_free_money;
     let materialized = build_expense_period_materialized(&expense_list, &budget_list);
+    let scheduled_keys = scheduled_income_keys(input.income_entries);
 
     periods
         .into_iter()
@@ -185,14 +236,23 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
             let income_total = if opening_partial {
                 0
             } else {
-                sum_income_in_period(
+                let actual = sum_income_in_period(
                     input.income_entries,
                     &period,
                     input.display_currency,
                     input.rates,
                     Some(&period.start_date),
                     None,
-                )
+                );
+                let projected = projected_income_in_period(
+                    input.schedules,
+                    &period,
+                    &scheduled_keys,
+                    input.display_currency,
+                    input.rates,
+                    input.today,
+                );
+                actual + projected
             };
 
             let expense_items = get_expense_items_in_period(
@@ -235,4 +295,94 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{IncomeSource, PayFrequency};
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    fn empty_rates() -> ExchangeRates {
+        ExchangeRates {
+            base: "usd".to_string(),
+            rates: HashMap::new(),
+            fetched_at: "2026-06-01".to_string(),
+        }
+    }
+
+    fn schedule(anchor: &str, amount: i32) -> IncomePayScheduleRow {
+        IncomePayScheduleRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            name: "salary".to_string(),
+            anchor_date: NaiveDate::parse_from_str(anchor, "%Y-%m-%d").unwrap(),
+            frequency: PayFrequency::Monthly,
+            amount,
+            currency: CurrencyCode::Usd,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn scheduled_income(schedule_id: Uuid, date: &str, amount: i32, deleted: bool) -> IncomeRow {
+        IncomeRow {
+            id: Uuid::new_v4(),
+            _user_id: Uuid::new_v4(),
+            name: "salary".to_string(),
+            amount,
+            currency: CurrencyCode::Usd,
+            source: IncomeSource::Scheduled,
+            date: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
+            schedule_id: Some(schedule_id),
+            created_at: Utc::now(),
+            _amount_overridden: false,
+            deleted_at: deleted.then(Utc::now),
+        }
+    }
+
+    fn build(schedule: &IncomePayScheduleRow, income: &[IncomeRow]) -> Vec<ProjectionRow> {
+        build_projection_rows(
+            schedule,
+            std::slice::from_ref(schedule),
+            income,
+            &[],
+            &[],
+            &[],
+            &[],
+            CurrencyCode::Usd,
+            &empty_rates(),
+            0,
+            None,
+            "2026-06-01",
+        )
+    }
+
+    #[test]
+    fn future_occurrence_is_projected_when_not_materialized() {
+        let sched = schedule("2026-01-15", 100_000);
+        let rows = build(&sched, &[]);
+        assert_eq!(rows[0].pay_date, "2026-06-15");
+        assert_eq!(rows[0].income_total, 100_000);
+    }
+
+    #[test]
+    fn materialized_occurrence_counts_once() {
+        let sched = schedule("2026-01-15", 100_000);
+        // Amount overridden after materialization; projection must use the actual row, not re-project.
+        let income = vec![scheduled_income(sched.id, "2026-06-15", 120_000, false)];
+        let rows = build(&sched, &income);
+        assert_eq!(rows[0].pay_date, "2026-06-15");
+        assert_eq!(rows[0].income_total, 120_000);
+    }
+
+    #[test]
+    fn soft_deleted_occurrence_is_neither_counted_nor_reprojected() {
+        let sched = schedule("2026-01-15", 100_000);
+        let income = vec![scheduled_income(sched.id, "2026-06-15", 100_000, true)];
+        let rows = build(&sched, &income);
+        assert_eq!(rows[0].pay_date, "2026-06-15");
+        assert_eq!(rows[0].income_total, 0);
+    }
 }

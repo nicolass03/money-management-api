@@ -11,6 +11,7 @@ fn settings_row(user_id: Uuid, revision: i64) -> UserSettingsRow {
     UserSettingsRow {
         user_id,
         display_currency: CurrencyCode::Usd,
+        language: "en".to_string(),
         primary_schedule_id: None,
         projection_initial_free_money: 0,
         projection_start_date: None,

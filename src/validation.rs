@@ -34,6 +34,14 @@ pub fn parse_currency(value: &str) -> Result<CurrencyCode, ApiError> {
     }
 }
 
+pub fn parse_language(value: &str) -> Result<String, ApiError> {
+    match value.to_lowercase().as_str() {
+        "en" => Ok("en".to_string()),
+        "es" => Ok("es".to_string()),
+        _ => Err(ApiError::BadRequest("invalid language".into())),
+    }
+}
+
 pub fn parse_pay_frequency(value: &str) -> Result<PayFrequency, ApiError> {
     match value.to_lowercase().as_str() {
         "weekly" => Ok(PayFrequency::Weekly),
