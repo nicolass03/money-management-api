@@ -213,6 +213,7 @@ diesel::table! {
         id -> Uuid,
         email -> Nullable<Text>,
         created_at -> Timestamptz,
+        onboarding_completed_at -> Nullable<Timestamptz>,
     }
 }
 

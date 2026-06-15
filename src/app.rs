@@ -14,7 +14,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
-use crate::auth::middleware::require_auth;
+use crate::auth::middleware::{require_auth, require_auth_onboarding_exempt};
 use crate::config::Config;
 use crate::routes;
 use crate::state::AppState;
@@ -48,6 +48,16 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(RequestBodyLimitLayer::new(256 * 1024));
+
+    let onboarding = Router::new()
+        .route(
+            "/auth/complete-onboarding",
+            post(routes::auth::complete_onboarding),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_onboarding_exempt,
+        ));
 
     let protected = Router::new()
         .route("/settings", get(routes::settings::get_settings).patch(routes::settings::patch_settings))
@@ -150,7 +160,7 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(routes::health::health))
-        .nest("/api/v1", protected)
+        .nest("/api/v1", onboarding.merge(protected))
         .layer(common_layers)
         .with_state(state)
 }

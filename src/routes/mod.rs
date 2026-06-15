@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod budgets;
 pub mod expenses;
 pub mod health;

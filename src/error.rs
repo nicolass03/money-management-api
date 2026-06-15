@@ -8,6 +8,8 @@ use serde::Serialize;
 pub enum ApiError {
     #[error("unauthorized")]
     Unauthorized,
+    #[error("onboarding_required")]
+    OnboardingRequired,
     #[error("not found")]
     NotFound,
     #[error("{0}")]
@@ -29,6 +31,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
+            ApiError::OnboardingRequired => (StatusCode::FORBIDDEN, self.to_string()),
             ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message.clone()),
             ApiError::Database(DieselError::NotFound) => {

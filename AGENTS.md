@@ -4,6 +4,13 @@
 
 See the root `money-management/AGENTS.md` for shared conventions (UUID IDs, Supabase auth, RLS, migrations, internal cron).
 
+## Invite onboarding (API enforcement)
+
+- `users.onboarding_completed_at` (migration `20260615200000_user_onboarding_completed`): `NULL` blocks all `/api/v1/*` routes except `POST /auth/complete-onboarding` (403 `onboarding_required`).
+- `POST /auth/complete-onboarding` verifies `auth.users.encrypted_password` is non-empty via `admin_connection` (not client `user_metadata`), then sets `onboarding_completed_at`.
+- Existing users are backfilled at migration time; new invited users stay blocked until they set a password on web and the client calls complete-onboarding.
+- Apply migration before deploy: `./scripts/migrate.sh`.
+
 ## Local build (macOS + libpq)
 
 Diesel links against `libpq`. On macOS, `brew install libpq` and ensure `.cargo/config.toml` darwin `rustflags` match your Homebrew prefix (default `/opt/homebrew`).
