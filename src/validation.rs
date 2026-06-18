@@ -42,6 +42,23 @@ pub fn parse_language(value: &str) -> Result<String, ApiError> {
     }
 }
 
+/// Themes are defined entirely on the frontend, so the API stores the code verbatim rather than
+/// validating against a fixed set (which would require an API deploy per new theme). We only
+/// guard the shape: a short, non-empty slug of `[A-Za-z0-9_-]`.
+pub fn parse_theme(value: &str) -> Result<String, ApiError> {
+    let trimmed = value.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= 64
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if valid {
+        Ok(trimmed.to_string())
+    } else {
+        Err(ApiError::BadRequest("invalid theme".into()))
+    }
+}
+
 pub fn parse_pay_frequency(value: &str) -> Result<PayFrequency, ApiError> {
     match value.to_lowercase().as_str() {
         "weekly" => Ok(PayFrequency::Weekly),

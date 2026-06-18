@@ -205,6 +205,7 @@ diesel::table! {
         cache_revision -> Int8,
         extra_spent_limit -> Nullable<Int4>,
         language -> Text,
+        theme -> Text,
     }
 }
 

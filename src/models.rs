@@ -72,6 +72,7 @@ pub struct UserSettingsRow {
     pub updated_at: DateTime<Utc>,
     pub cache_revision: i64,
     pub extra_spent_limit: Option<i32>,
+    pub theme: String,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -213,6 +214,7 @@ pub struct UserSettingsResponse {
     pub projection_initial_free_money: i32,
     pub projection_start_date: Option<NaiveDate>,
     pub extra_spent_limit: Option<i32>,
+    pub theme: String,
     pub cache_revision: i64,
     pub updated_at: DateTime<Utc>,
 }
@@ -231,6 +233,7 @@ impl UserSettingsResponse {
             projection_initial_free_money: row.projection_initial_free_money,
             projection_start_date: row.projection_start_date,
             extra_spent_limit: row.extra_spent_limit,
+            theme: row.theme,
             cache_revision: row.cache_revision,
             updated_at: row.updated_at,
         }

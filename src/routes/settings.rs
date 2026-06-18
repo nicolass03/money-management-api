@@ -9,8 +9,8 @@ use crate::models::{UserSettingsResponse, UserSettingsRow};
 use crate::repos::{income_schedules, settings as settings_repo};
 use crate::state::AppState;
 use crate::validation::{
-    parse_currency, parse_date, parse_language, regex_like_date, require_extra_spent_limit,
-    require_projection_free_money,
+    parse_currency, parse_date, parse_language, parse_theme, regex_like_date,
+    require_extra_spent_limit, require_projection_free_money,
 };
 
 pub async fn get_settings(
@@ -33,6 +33,10 @@ pub async fn patch_settings(
     };
     let language = match body.language {
         Some(ref value) => Some(parse_language(value)?),
+        None => None,
+    };
+    let theme = match body.theme {
+        Some(ref value) => Some(parse_theme(value)?),
         None => None,
     };
 
@@ -74,6 +78,7 @@ pub async fn patch_settings(
         projection_initial_free_money,
         projection_start_date,
         extra_spent_limit,
+        theme,
     )
     .await?;
 

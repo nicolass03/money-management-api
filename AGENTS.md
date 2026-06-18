@@ -77,11 +77,11 @@ The repo includes a multi-stage `Dockerfile` (cargo-chef + `libpq-dev` at build,
    |----------|-------|
    | `DATABASE_URL` | Supabase **transaction pooler** (`:6543`) for runtime |
    | `SUPABASE_URL` | Supabase project URL (JWKS) |
-   | `CORS_ORIGIN` | Your Vercel/Next.js origin(s), comma-separated |
+   | `CORS_ORIGIN` | Deployed UI origin(s) (the Vite SPA on Railway), comma-separated |
    | `DAILY_EXPENSES_HOUR` | UTC on Railway containers (default `0`) |
 
 4. Do **not** set `PORT` unless you have a reason — Railway injects it and the app reads it from env.
 5. Run migrations separately via `./scripts/migrate.sh` (session pooler `:5432`), not on deploy.
-6. Generate a public domain under **Networking** and point the Next.js `API_URL` at it.
+6. Generate a public domain under **Networking** and point the UI's `VITE_API_URL` at it (rebuild the UI — it's baked at build time).
 
 The internal daily-expense scheduler works as-is on Railway (always-on process + Postgres advisory lock).
