@@ -273,3 +273,33 @@ pub fn get_projection_periods(
 
     period_map.into_values().collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::PayFrequency;
+
+    fn monthly_schedule() -> PayScheduleInput {
+        PayScheduleInput {
+            anchor_date: "2026-01-25".to_string(),
+            frequency: PayFrequency::Monthly,
+            last_payment_date: None,
+        }
+    }
+
+    #[test]
+    fn period_on_payday_is_closing_period() {
+        let period = get_period_containing(&monthly_schedule(), "2026-06-25");
+        assert_eq!(period.start_date, "2026-05-26");
+        assert_eq!(period.end_date, "2026-06-25");
+        assert_eq!(period.pay_date, "2026-06-25");
+    }
+
+    #[test]
+    fn period_day_after_payday_rolls_forward() {
+        let period = get_period_containing(&monthly_schedule(), "2026-06-26");
+        assert_eq!(period.start_date, "2026-06-26");
+        assert_eq!(period.end_date, "2026-07-25");
+        assert_eq!(period.pay_date, "2026-07-25");
+    }
+}

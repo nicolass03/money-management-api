@@ -782,4 +782,42 @@ mod tests {
         let total = compute_extra_spent(&expenses, &period(), CurrencyCode::Usd, &empty_rates());
         assert_eq!(total, 0);
     }
+
+    #[test]
+    fn last_period_excludes_prior_period_expenses_after_payday() {
+        use crate::models::{IncomePayScheduleRow, PayFrequency};
+
+        let schedule = IncomePayScheduleRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            name: "Pay".to_string(),
+            anchor_date: NaiveDate::from_ymd_opt(2026, 1, 25).unwrap(),
+            frequency: PayFrequency::Monthly,
+            amount: 500_000,
+            currency: CurrencyCode::Usd,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let prior_period_expense = expense(1200, "2026-06-20");
+
+        let view = build_expense_period_view(
+            ExpensePeriodKey::LastPeriod,
+            Some(&schedule),
+            &[prior_period_expense],
+            &[],
+            &[],
+            &[],
+            CurrencyCode::Usd,
+            &empty_rates(),
+            "2026-06-26",
+            false,
+            None,
+        )
+        .expect("pay period view");
+
+        assert_eq!(view.period.start_date, "2026-06-26");
+        assert_eq!(view.period.pay_date, "2026-07-25");
+        assert!(view.items.is_empty());
+    }
 }

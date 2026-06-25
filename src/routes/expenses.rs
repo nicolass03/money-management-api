@@ -28,7 +28,12 @@ pub async fn get_expense_period_view(
 ) -> Result<Json<Arc<crate::services::expense_period::ExpensePeriodViewResponse>>, ApiError> {
     let response = state
         .loader
-        .expense_period_view(user.sub, &query.period, query.include_projected)
+        .expense_period_view(
+            user.sub,
+            &query.period,
+            query.include_projected,
+            query.as_of.as_deref(),
+        )
         .await?;
     Ok(Json(response))
 }
@@ -40,7 +45,7 @@ pub async fn get_upcoming_payable(
 ) -> Result<Json<Arc<Vec<crate::services::upcoming_payable::PayableFutureItem>>>, ApiError> {
     let items = state
         .loader
-        .upcoming_payable(user.sub, query.horizon_days)
+        .upcoming_payable(user.sub, query.horizon_days, query.as_of.as_deref())
         .await?;
     Ok(Json(items))
 }

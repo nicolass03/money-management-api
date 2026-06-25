@@ -168,18 +168,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    subscription_reminders (id) {
-        id -> Uuid,
-        user_id -> Uuid,
-        recurring_expense_id -> Uuid,
-        kind -> Text,
-        charge_date -> Date,
-        created_at -> Timestamptz,
-        dismissed_at -> Nullable<Timestamptz>,
-    }
-}
-
-diesel::table! {
     use diesel::sql_types::*;
     use super::sql_types::CurrencyCode;
 
@@ -192,6 +180,18 @@ diesel::table! {
         currency -> CurrencyCode,
         user_id -> Uuid,
         id -> Uuid,
+    }
+}
+
+diesel::table! {
+    subscription_reminders (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        recurring_expense_id -> Uuid,
+        kind -> Text,
+        charge_date -> Date,
+        created_at -> Timestamptz,
+        dismissed_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -249,9 +249,9 @@ diesel::joinable!(planned_expenses -> users (user_id));
 diesel::joinable!(recurring_expense_tags -> recurring_expenses (recurring_expense_id));
 diesel::joinable!(recurring_expense_tags -> tags (tag_id));
 diesel::joinable!(recurring_expenses -> users (user_id));
+diesel::joinable!(savings -> users (user_id));
 diesel::joinable!(subscription_reminders -> recurring_expenses (recurring_expense_id));
 diesel::joinable!(subscription_reminders -> users (user_id));
-diesel::joinable!(savings -> users (user_id));
 diesel::joinable!(tags -> users (user_id));
 diesel::joinable!(user_settings -> income_pay_schedules (primary_schedule_id));
 diesel::joinable!(user_settings -> users (user_id));

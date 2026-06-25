@@ -133,3 +133,15 @@ pub fn parse_tag_names(tags: &[String]) -> Result<Vec<String>, ApiError> {
 pub fn today_iso() -> String {
     chrono::Utc::now().format("%Y-%m-%d").to_string()
 }
+
+/// Reference calendar date for pay-period boundaries and day-relative views.
+/// Clients should pass their local `asOf`; server falls back to UTC today.
+pub fn resolve_reference_date(as_of: Option<&str>) -> Result<String, ApiError> {
+    match as_of {
+        Some(value) if !value.is_empty() => {
+            parse_date(value)?;
+            Ok(value.to_string())
+        }
+        _ => Ok(today_iso()),
+    }
+}

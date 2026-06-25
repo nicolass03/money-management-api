@@ -21,6 +21,7 @@ type CacheKey = (Uuid, i64);
 // boundaries across midnight while the revision is unchanged.
 type PeriodViewCacheKey = (Uuid, i64, String, bool, String);
 type UpcomingPayableCacheKey = (Uuid, i64, i32, String);
+type ProjectionsCacheKey = (Uuid, i64, String);
 
 pub type ExpensesWithTags = Vec<(ExpenseRow, Vec<String>)>;
 pub type RecurringWithTags = Vec<(RecurringExpenseRow, Vec<String>)>;
@@ -53,7 +54,7 @@ pub struct UserDataCache {
     income: Cache<CacheKey, Arc<Vec<IncomeRow>>>,
     schedules: Cache<CacheKey, Arc<Vec<IncomePayScheduleRow>>>,
     tags: Cache<CacheKey, Arc<Vec<String>>>,
-    projections: Cache<CacheKey, Arc<ProjectionsResponse>>,
+    projections: Cache<ProjectionsCacheKey, Arc<ProjectionsResponse>>,
     money_context: Cache<CacheKey, Arc<MoneyContextResponse>>,
     expense_period_view: Cache<PeriodViewCacheKey, Arc<ExpensePeriodViewResponse>>,
     upcoming_payable: Cache<UpcomingPayableCacheKey, Arc<Vec<PayableFutureItem>>>,
@@ -74,7 +75,10 @@ impl UserDataCache {
             income: build_cache(max_capacity),
             schedules: build_cache(max_capacity),
             tags: build_cache(max_capacity),
-            projections: build_cache(max_capacity),
+            projections: Cache::builder()
+                .max_capacity(max_capacity)
+                .time_to_live(Duration::from_secs(3600))
+                .build(),
             money_context: build_cache(max_capacity),
             expense_period_view: Cache::builder()
                 .max_capacity(max_capacity)
@@ -211,16 +215,17 @@ impl UserDataCache {
         &self,
         user_id: Uuid,
         revision: i64,
+        as_of: &str,
     ) -> Option<Arc<ProjectionsResponse>> {
         if !self.enabled {
             return None;
         }
-        let key = (user_id, revision);
+        let key = (user_id, revision, as_of.to_string());
         if let Some(hit) = self.projections.get(&key).await {
-            tracing::debug!(%user_id, revision, resource = "projections", "cache hit");
+            tracing::debug!(%user_id, revision, as_of, resource = "projections", "cache hit");
             return Some(hit);
         }
-        tracing::debug!(%user_id, revision, resource = "projections", "cache miss");
+        tracing::debug!(%user_id, revision, as_of, resource = "projections", "cache miss");
         None
     }
 
@@ -228,13 +233,16 @@ impl UserDataCache {
         &self,
         user_id: Uuid,
         revision: i64,
+        as_of: &str,
         value: Arc<ProjectionsResponse>,
     ) {
         if !self.enabled {
             return;
         }
-        tracing::debug!(%user_id, revision, resource = "projections", "cache store");
-        self.projections.insert((user_id, revision), value).await;
+        tracing::debug!(%user_id, revision, as_of, resource = "projections", "cache store");
+        self.projections
+            .insert((user_id, revision, as_of.to_string()), value)
+            .await;
     }
 
     pub async fn get_money_context(
@@ -352,7 +360,7 @@ impl UserDataCache {
                 .invalidate_entries_if(move |key: &CacheKey, _| key.0 == user_id),
             CacheResource::Projections => self
                 .projections
-                .invalidate_entries_if(move |key: &CacheKey, _| key.0 == user_id),
+                .invalidate_entries_if(move |key: &ProjectionsCacheKey, _| key.0 == user_id),
             CacheResource::MoneyContext => self
                 .money_context
                 .invalidate_entries_if(move |key: &CacheKey, _| key.0 == user_id),

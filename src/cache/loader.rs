@@ -18,7 +18,7 @@ use crate::services::expense_period::{
 use crate::services::projections::build_projection_rows;
 use crate::services::upcoming_payable::{build_upcoming_payable_items, PayableFutureItem};
 use crate::state::DbPool;
-use crate::validation::today_iso;
+use crate::validation::resolve_reference_date;
 
 use super::user_data_cache::UserDataCache;
 
@@ -175,11 +175,17 @@ impl UserDataLoader {
         &self,
         user_id: Uuid,
         include_past: bool,
+        as_of: Option<&str>,
     ) -> Result<Arc<ProjectionsResponse>, ApiError> {
         let user_settings = self.current_settings(user_id).await?;
         let revision = user_settings.cache_revision;
+        let reference_date = resolve_reference_date(as_of)?;
 
-        if let Some(cached) = self.cache.get_projections(user_id, revision).await {
+        if let Some(cached) = self
+            .cache
+            .get_projections(user_id, revision, &reference_date)
+            .await
+        {
             return Ok(filter_projection_rows(cached, include_past));
         }
 
@@ -245,7 +251,7 @@ impl UserDataLoader {
             &rates,
             user_settings.projection_initial_free_money,
             projection_start_ref,
-            &today_iso(),
+            &reference_date,
         );
 
         let response = Arc::new(ProjectionsResponse {
@@ -256,7 +262,7 @@ impl UserDataLoader {
         });
 
         self.cache
-            .set_projections(user_id, revision, response.clone())
+            .set_projections(user_id, revision, &reference_date, response.clone())
             .await;
 
         Ok(filter_projection_rows(response, include_past))
@@ -267,6 +273,7 @@ impl UserDataLoader {
         user_id: Uuid,
         period: &str,
         include_projected: bool,
+        as_of: Option<&str>,
     ) -> Result<Arc<ExpensePeriodViewResponse>, ApiError> {
         let period_key = ExpensePeriodKey::parse(period).ok_or_else(|| {
             ApiError::BadRequest("invalid period; use last-period, last-month, or last-3-months".into())
@@ -274,11 +281,11 @@ impl UserDataLoader {
 
         let user_settings = self.current_settings(user_id).await?;
         let revision = user_settings.cache_revision;
-        let today = today_iso();
+        let reference_date = resolve_reference_date(as_of)?;
 
         if let Some(cached) = self
             .cache
-            .get_expense_period_view(user_id, revision, period, include_projected, &today)
+            .get_expense_period_view(user_id, revision, period, include_projected, &reference_date)
             .await
         {
             return Ok(cached);
@@ -308,7 +315,7 @@ impl UserDataLoader {
             &budgets,
             display_currency,
             &rates,
-            &today,
+            &reference_date,
             include_projected,
             user_settings.extra_spent_limit,
         )
@@ -323,7 +330,7 @@ impl UserDataLoader {
                 revision,
                 period,
                 include_projected,
-                &today,
+                &reference_date,
                 response.clone(),
             )
             .await;
@@ -335,14 +342,15 @@ impl UserDataLoader {
         &self,
         user_id: Uuid,
         horizon_days: i32,
+        as_of: Option<&str>,
     ) -> Result<Arc<Vec<PayableFutureItem>>, ApiError> {
         let user_settings = self.current_settings(user_id).await?;
         let revision = user_settings.cache_revision;
-        let today = today_iso();
+        let reference_date = resolve_reference_date(as_of)?;
 
         if let Some(cached) = self
             .cache
-            .get_upcoming_payable(user_id, revision, horizon_days, &today)
+            .get_upcoming_payable(user_id, revision, horizon_days, &reference_date)
             .await
         {
             return Ok(cached);
@@ -356,12 +364,12 @@ impl UserDataLoader {
             &expense_rows,
             &recurring,
             &planned,
-            &today,
+            &reference_date,
             horizon_days,
         ));
 
         self.cache
-            .set_upcoming_payable(user_id, revision, horizon_days, &today, items.clone())
+            .set_upcoming_payable(user_id, revision, horizon_days, &reference_date, items.clone())
             .await;
 
         Ok(items)

@@ -15,7 +15,7 @@ pub async fn get_projections(
 ) -> Result<Json<Arc<ProjectionsResponse>>, ApiError> {
     let response = state
         .loader
-        .projections(user.sub, query.include_past)
+        .projections(user.sub, query.include_past, query.as_of.as_deref())
         .await?;
     Ok(Json(response))
 }

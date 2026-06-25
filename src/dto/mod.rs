@@ -23,6 +23,8 @@ pub struct ExpensePeriodViewQuery {
     pub period: String,
     #[serde(default)]
     pub include_projected: bool,
+    /// Client local calendar date (`YYYY-MM-DD`) for pay-period boundaries; falls back to UTC today.
+    pub as_of: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +32,8 @@ pub struct ExpensePeriodViewQuery {
 pub struct UpcomingPayableQuery {
     #[serde(default = "default_horizon_days")]
     pub horizon_days: i32,
+    /// Client local calendar date (`YYYY-MM-DD`); falls back to UTC today.
+    pub as_of: Option<String>,
 }
 
 fn default_horizon_days() -> i32 {
@@ -48,6 +52,8 @@ pub struct ExpensesQuery {
 pub struct ProjectionsQuery {
     #[serde(default = "default_include_past")]
     pub include_past: bool,
+    /// Client local calendar date (`YYYY-MM-DD`); falls back to UTC today.
+    pub as_of: Option<String>,
 }
 
 fn default_include_past() -> bool {
