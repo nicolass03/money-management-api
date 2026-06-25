@@ -8,5 +8,6 @@ pub mod planned_expenses;
 pub mod recurring_expenses;
 pub mod savings;
 pub mod settings;
+pub mod subscription_reminders;
 pub mod tags;
 pub mod users;

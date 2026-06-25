@@ -12,6 +12,7 @@ use crate::error::ApiError;
 use crate::repos::{connection, users};
 use crate::services::charge_due_expenses::charge_due_expenses_for_date;
 use crate::services::charge_due_income::charge_due_income_for_date;
+use crate::services::subscription_reminders::generate_subscription_reminders_for_date;
 use crate::state::DbPool;
 use crate::validation::today_iso;
 
@@ -43,7 +44,12 @@ pub async fn run_daily_expenses(
             }
         }
 
-        created += expenses_created + income_created;
+        // Cancellation-reminder rows drive the web banners; iOS schedules its own local
+        // notifications. They are not server-cached, so no invalidation is needed here.
+        let reminders_created =
+            generate_subscription_reminders_for_date(pool, user_id, &date).await?;
+
+        created += expenses_created + income_created + reminders_created;
     }
     Ok((date, created))
 }

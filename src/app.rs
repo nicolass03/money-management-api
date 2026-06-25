@@ -113,6 +113,19 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
                 .delete(routes::recurring_expenses::delete_recurring),
         )
         .route(
+            "/recurring-expenses/{id}/cancel-reminder",
+            post(routes::recurring_expenses::enable_cancel_reminder)
+                .delete(routes::recurring_expenses::disable_cancel_reminder),
+        )
+        .route(
+            "/subscription-reminders",
+            get(routes::subscription_reminders::list_reminders),
+        )
+        .route(
+            "/subscription-reminders/{id}/dismiss",
+            post(routes::subscription_reminders::dismiss_reminder),
+        )
+        .route(
             "/planned-expenses",
             get(routes::planned_expenses::list_planned).post(routes::planned_expenses::create_planned),
         )

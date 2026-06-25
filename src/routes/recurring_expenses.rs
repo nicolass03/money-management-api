@@ -155,6 +155,40 @@ pub async fn update_recurring(
     Ok(Json(recurring_to_response(row, tags)))
 }
 
+/// Flags a subscription for cancellation reminders (5 & 2 days before its next charge). Returns the
+/// updated recurring expense so clients can reflect the new flag immediately.
+pub async fn enable_cancel_reminder(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RecurringExpenseResponse>, ApiError> {
+    let row = recurring_repo::set_cancel_reminder(&state.db_pool, user.sub, id, true)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    state
+        .cache
+        .invalidate(InvalidationScope::RecurringChange, user.sub).await;
+    let (_, tags) = recurring_repo::find_with_tags(&state.db_pool, user.sub, id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(recurring_to_response(row, tags)))
+}
+
+/// Clears the cancellation-reminder flag for a subscription.
+pub async fn disable_cancel_reminder(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    recurring_repo::set_cancel_reminder(&state.db_pool, user.sub, id, false)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    state
+        .cache
+        .invalidate(InvalidationScope::RecurringChange, user.sub).await;
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
 pub async fn delete_recurring(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,

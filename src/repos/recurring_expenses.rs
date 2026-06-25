@@ -173,6 +173,41 @@ pub async fn update(
     .map_err(ApiError::from)
 }
 
+/// Toggles the cancellation-reminder flag for a single recurring expense. Returns the updated row
+/// (or `None` if it does not belong to the user / does not exist).
+pub async fn set_cancel_reminder(
+    pool: &DbPool,
+    user_id: Uuid,
+    id: Uuid,
+    enabled: bool,
+) -> Result<Option<RecurringExpenseRow>, ApiError> {
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    let now = Utc::now();
+    conn.transaction(|conn| {
+        Box::pin(async move {
+            let recurring = diesel::update(
+                recurring_expenses::table
+                    .filter(recurring_expenses::user_id.eq(user_id))
+                    .filter(recurring_expenses::id.eq(id)),
+            )
+            .set((
+                recurring_expenses::cancel_reminder_enabled.eq(enabled),
+                recurring_expenses::updated_at.eq(now),
+            ))
+            .returning(RecurringExpenseRow::as_returning())
+            .get_result(conn)
+            .await
+            .optional()?;
+            if recurring.is_some() {
+                settings::bump_cache_revision(conn, user_id).await?;
+            }
+            Ok::<Option<RecurringExpenseRow>, diesel::result::Error>(recurring)
+        })
+    })
+    .await
+    .map_err(ApiError::from)
+}
+
 pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     conn.transaction(|conn| {

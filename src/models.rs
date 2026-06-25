@@ -147,6 +147,7 @@ pub struct RecurringExpenseRow {
     pub last_payment_date: Option<NaiveDate>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub cancel_reminder_enabled: bool,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -328,6 +329,7 @@ pub struct RecurringExpenseResponse {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub tags: Vec<String>,
+    pub cancel_reminder_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -415,7 +417,23 @@ pub fn recurring_to_response(row: RecurringExpenseRow, tags: Vec<String>) -> Rec
         created_at: row.created_at,
         updated_at: row.updated_at,
         tags,
+        cancel_reminder_enabled: row.cancel_reminder_enabled,
     }
+}
+
+/// A pending cancellation reminder for a subscription, enriched with the recurring expense's
+/// display fields so the web banner can render without a second lookup. `kind` is `"five_day"`
+/// or `"two_day"`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionReminderResponse {
+    pub id: Uuid,
+    pub recurring_expense_id: Uuid,
+    pub name: String,
+    pub kind: String,
+    pub charge_date: NaiveDate,
+    pub amount: i32,
+    pub currency: CurrencyCode,
 }
 
 pub fn planned_to_response(row: PlannedExpenseRow, tags: Vec<String>) -> PlannedExpenseResponse {

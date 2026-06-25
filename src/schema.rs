@@ -163,6 +163,19 @@ diesel::table! {
         last_payment_date -> Nullable<Date>,
         user_id -> Uuid,
         id -> Uuid,
+        cancel_reminder_enabled -> Bool,
+    }
+}
+
+diesel::table! {
+    subscription_reminders (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        recurring_expense_id -> Uuid,
+        kind -> Text,
+        charge_date -> Date,
+        created_at -> Timestamptz,
+        dismissed_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -236,6 +249,8 @@ diesel::joinable!(planned_expenses -> users (user_id));
 diesel::joinable!(recurring_expense_tags -> recurring_expenses (recurring_expense_id));
 diesel::joinable!(recurring_expense_tags -> tags (tag_id));
 diesel::joinable!(recurring_expenses -> users (user_id));
+diesel::joinable!(subscription_reminders -> recurring_expenses (recurring_expense_id));
+diesel::joinable!(subscription_reminders -> users (user_id));
 diesel::joinable!(savings -> users (user_id));
 diesel::joinable!(tags -> users (user_id));
 diesel::joinable!(user_settings -> income_pay_schedules (primary_schedule_id));
@@ -254,6 +269,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     recurring_expense_tags,
     recurring_expenses,
     savings,
+    subscription_reminders,
     tags,
     user_settings,
     users,
