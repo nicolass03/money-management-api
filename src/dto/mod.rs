@@ -49,6 +49,19 @@ pub struct ExpensesQuery {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReportSummaryQuery {
+    pub from: String,
+    pub to: String,
+    #[serde(default = "default_compare_prior")]
+    pub compare_prior: bool,
+}
+
+fn default_compare_prior() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectionsQuery {
     #[serde(default = "default_include_past")]
     pub include_past: bool,

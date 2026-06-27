@@ -239,7 +239,7 @@ pub fn build_expense_period_view(
 /// `recurring_id`, `planned_expense_id`, and `budget_id` are all `None`, converted to the display
 /// currency. This intentionally reads the raw expense rows rather than the period `items` so it is
 /// unaffected by `include_projected` and budget-summary aggregation.
-fn compute_extra_spent(
+pub(crate) fn compute_extra_spent(
     expenses: &[(ExpenseRow, Vec<String>)],
     period: &PayPeriod,
     display_currency: CurrencyCode,

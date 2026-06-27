@@ -156,6 +156,7 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
         .route("/savings", get(routes::savings::list_savings))
         .route("/tags", get(routes::tags::list_tags))
         .route("/projections", get(routes::projections::get_projections))
+        .route("/reports/summary", get(routes::reports::get_report_summary))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let protected = if config.rate_limit_enabled {

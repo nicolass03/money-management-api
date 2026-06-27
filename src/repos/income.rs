@@ -31,6 +31,34 @@ pub async fn list_all_with_conn(
         .map_err(ApiError::from)
 }
 
+pub async fn list_in_range(
+    pool: &DbPool,
+    user_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<Vec<IncomeRow>, ApiError> {
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    list_in_range_with_conn(&mut conn, user_id, from, to).await
+}
+
+pub async fn list_in_range_with_conn(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<Vec<IncomeRow>, ApiError> {
+    income::table
+        .filter(income::user_id.eq(user_id))
+        .filter(income::deleted_at.is_null())
+        .filter(income::date.ge(from))
+        .filter(income::date.le(to))
+        .order(income::date.desc())
+        .select(IncomeRow::as_select())
+        .load(conn)
+        .await
+        .map_err(ApiError::from)
+}
+
 /// All income rows including soft-deleted tombstones. Projections need tombstones so a
 /// deleted scheduled occurrence is neither counted nor re-projected from its schedule.
 pub async fn list_with_deleted_with_conn(

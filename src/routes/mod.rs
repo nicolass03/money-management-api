@@ -9,6 +9,7 @@ pub mod money_context;
 pub mod planned_expenses;
 pub mod projections;
 pub mod recurring_expenses;
+pub mod reports;
 pub mod savings;
 pub mod settings;
 pub mod subscription_reminders;
