@@ -9,6 +9,7 @@ pub enum InvalidationScope {
     IncomeChange,
     ScheduleChange,
     SettingsChange,
+    AccountChange,
     MoneyContextRefresh,
 }
 
@@ -63,6 +64,9 @@ impl InvalidationScope {
                 CacheResource::ExpensePeriodView,
                 CacheResource::UpcomingPayable,
             ],
+            // Account initial amounts seed the projection running balance, so any account
+            // change must drop the cached projections.
+            Self::AccountChange => &[CacheResource::Projections],
             Self::MoneyContextRefresh => &[CacheResource::MoneyContext],
         }
     }

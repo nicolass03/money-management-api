@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod budgets;
 pub mod connection;
 pub mod exchange_rates;

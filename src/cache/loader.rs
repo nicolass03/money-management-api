@@ -8,9 +8,10 @@ use crate::models::{
     IncomePayScheduleResponse, UserSettingsRow,
 };
 use crate::repos::{
-    budgets, connection, expenses, income, income_schedules, planned_expenses, recurring_expenses,
-    settings, tags,
+    accounts, budgets, connection, expenses, income, income_schedules, planned_expenses,
+    recurring_expenses, settings, tags,
 };
+use crate::services::currency::convert_amount;
 use crate::services::exchange_rates::get_exchange_rates;
 use crate::services::expense_period::{
     build_expense_period_view, ExpensePeriodKey, ExpensePeriodViewResponse,
@@ -239,6 +240,22 @@ impl UserDataLoader {
             .map(|d| d.format("%Y-%m-%d").to_string());
         let projection_start_ref = projection_start_date.as_deref();
 
+        // The projection's opening balance is now the sum of every account's initial amount,
+        // each converted into the display currency (replacing the old single
+        // `projection_initial_free_money` setting).
+        let account_list = accounts::list_active_with_conn(&mut conn, user_id).await?;
+        let initial_free_money: i32 = account_list
+            .iter()
+            .map(|account| {
+                convert_amount(
+                    account.initial_amount,
+                    account.currency,
+                    user_settings.display_currency,
+                    &rates,
+                )
+            })
+            .sum();
+
         let rows = build_projection_rows(
             &primary_schedule,
             &schedules,
@@ -249,7 +266,7 @@ impl UserDataLoader {
             &budget_rows,
             user_settings.display_currency,
             &rates,
-            user_settings.projection_initial_free_money,
+            initial_free_money,
             projection_start_ref,
             &reference_date,
         );

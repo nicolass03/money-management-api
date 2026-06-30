@@ -153,6 +153,15 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
             "/budgets/{id}/expenses/{expense_id}",
             delete(routes::budgets::delete_budget_expense),
         )
+        .route(
+            "/accounts",
+            get(routes::accounts::list_accounts).post(routes::accounts::create_account),
+        )
+        .route(
+            "/accounts/{id}",
+            axum::routing::patch(routes::accounts::update_account)
+                .delete(routes::accounts::delete_account),
+        )
         .route("/savings", get(routes::savings::list_savings))
         .route("/tags", get(routes::tags::list_tags))
         .route("/projections", get(routes::projections::get_projections))

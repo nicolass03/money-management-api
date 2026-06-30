@@ -89,12 +89,29 @@ pub struct MoneyContextResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateAccountRequest {
+    pub name: Option<String>,
+    pub currency: String,
+    pub initial_amount: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAccountRequest {
+    pub name: Option<String>,
+    pub currency: String,
+    pub initial_amount: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateIncomeScheduleRequest {
     pub name: String,
     pub anchor_date: String,
     pub frequency: String,
     pub amount: i32,
     pub currency: String,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +122,7 @@ pub struct UpdateIncomeScheduleRequest {
     pub frequency: String,
     pub amount: i32,
     pub currency: String,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +132,7 @@ pub struct CreateIncomeRequest {
     pub amount: i32,
     pub currency: String,
     pub date: String,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +142,7 @@ pub struct UpdateIncomeRequest {
     pub amount: i32,
     pub currency: String,
     pub date: String,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,6 +154,7 @@ pub struct CreateExpenseRequest {
     pub date: String,
     pub tags: Vec<String>,
     pub is_subscription: bool,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +209,7 @@ pub struct CreatePlannedExpenseRequest {
     pub amount: i32,
     pub currency: String,
     pub tags: Vec<String>,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,6 +220,7 @@ pub struct UpdatePlannedExpenseRequest {
     pub amount: i32,
     pub currency: String,
     pub tags: Vec<String>,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]

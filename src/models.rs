@@ -76,6 +76,19 @@ pub struct UserSettingsRow {
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::accounts)]
+pub struct AccountRow {
+    pub id: Uuid,
+    #[diesel(column_name = user_id)]
+    pub _user_id: Uuid,
+    pub name: Option<String>,
+    pub currency: CurrencyCode,
+    pub initial_amount: i32,
+    pub archived_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = crate::schema::income_pay_schedules)]
 pub struct IncomePayScheduleRow {
     pub id: Uuid,
@@ -87,6 +100,7 @@ pub struct IncomePayScheduleRow {
     pub currency: CurrencyCode,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -105,6 +119,7 @@ pub struct IncomeRow {
     #[diesel(column_name = amount_overridden)]
     pub _amount_overridden: bool,
     pub deleted_at: Option<DateTime<Utc>>,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -124,6 +139,7 @@ pub struct ExpenseRow {
     pub amount_overridden: bool,
     pub is_subscription: bool,
     pub created_at: DateTime<Utc>,
+    pub account_id: Option<Uuid>,
 }
 
 impl ExpenseRow {
@@ -162,6 +178,7 @@ pub struct PlannedExpenseRow {
     pub currency: CurrencyCode,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -241,6 +258,31 @@ impl UserSettingsResponse {
     }
 }
 
+/// An account, enriched with its derived current balance (in the account's own currency).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountResponse {
+    pub id: Uuid,
+    pub name: Option<String>,
+    pub currency: CurrencyCode,
+    pub initial_amount: i32,
+    pub balance: i32,
+    pub archived_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+pub fn account_to_response(row: AccountRow, balance: i32) -> AccountResponse {
+    AccountResponse {
+        id: row.id,
+        name: row.name,
+        currency: row.currency,
+        initial_amount: row.initial_amount,
+        balance,
+        archived_at: row.archived_at,
+        created_at: row.created_at,
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncomePayScheduleResponse {
@@ -252,6 +294,7 @@ pub struct IncomePayScheduleResponse {
     pub currency: CurrencyCode,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub account_id: Option<Uuid>,
 }
 
 impl From<IncomePayScheduleRow> for IncomePayScheduleResponse {
@@ -265,6 +308,7 @@ impl From<IncomePayScheduleRow> for IncomePayScheduleResponse {
             currency: row.currency,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            account_id: row.account_id,
         }
     }
 }
@@ -280,6 +324,7 @@ pub struct IncomeResponse {
     pub date: NaiveDate,
     pub schedule_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
+    pub account_id: Option<Uuid>,
 }
 
 impl From<IncomeRow> for IncomeResponse {
@@ -293,6 +338,7 @@ impl From<IncomeRow> for IncomeResponse {
             date: row.date,
             schedule_id: row.schedule_id,
             created_at: row.created_at,
+            account_id: row.account_id,
         }
     }
 }
@@ -313,6 +359,7 @@ pub struct ExpenseResponse {
     pub is_subscription: bool,
     pub created_at: DateTime<Utc>,
     pub tags: Vec<String>,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -343,6 +390,7 @@ pub struct PlannedExpenseResponse {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub tags: Vec<String>,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -401,6 +449,7 @@ pub fn expense_to_response(row: ExpenseRow, tags: Vec<String>) -> ExpenseRespons
         is_subscription: row.is_subscription,
         created_at: row.created_at,
         tags,
+        account_id: row.account_id,
     }
 }
 
@@ -446,6 +495,7 @@ pub fn planned_to_response(row: PlannedExpenseRow, tags: Vec<String>) -> Planned
         created_at: row.created_at,
         updated_at: row.updated_at,
         tags,
+        account_id: row.account_id,
     }
 }
 

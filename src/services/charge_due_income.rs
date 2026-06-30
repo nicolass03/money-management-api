@@ -54,6 +54,7 @@ pub async fn charge_due_income_for_date(
             schedule.currency,
             due_date,
             schedule.id,
+            schedule.account_id,
             now,
         )
         .await;

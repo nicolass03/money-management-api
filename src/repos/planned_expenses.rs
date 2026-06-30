@@ -91,6 +91,7 @@ pub async fn create(
     amount: i32,
     currency: CurrencyCode,
     tag_names: &[String],
+    account_id: Option<Uuid>,
 ) -> Result<PlannedExpenseRow, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -103,6 +104,7 @@ pub async fn create(
                     planned_expenses::date.eq(date),
                     planned_expenses::amount.eq(amount),
                     planned_expenses::currency.eq(currency),
+                    planned_expenses::account_id.eq(account_id),
                     planned_expenses::created_at.eq(now),
                     planned_expenses::updated_at.eq(now),
                 ))
@@ -127,6 +129,7 @@ pub async fn update(
     amount: i32,
     currency: CurrencyCode,
     tag_names: &[String],
+    account_id: Option<Uuid>,
 ) -> Result<Option<PlannedExpenseRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -142,6 +145,7 @@ pub async fn update(
                 planned_expenses::date.eq(date),
                 planned_expenses::amount.eq(amount),
                 planned_expenses::currency.eq(currency),
+                planned_expenses::account_id.eq(account_id),
                 planned_expenses::updated_at.eq(now),
             ))
             .returning(PlannedExpenseRow::as_returning())

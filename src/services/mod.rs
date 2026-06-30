@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod budget_status;
 pub mod charge_due_expenses;
 pub mod charge_due_income;
