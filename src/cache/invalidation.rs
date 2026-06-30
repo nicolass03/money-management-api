@@ -64,8 +64,7 @@ impl InvalidationScope {
                 CacheResource::ExpensePeriodView,
                 CacheResource::UpcomingPayable,
             ],
-            // Account initial amounts seed the projection running balance, so any account
-            // change must drop the cached projections.
+            // Projection opening balance uses account initial amounts + projection_initial_free_money.
             Self::AccountChange => &[CacheResource::Projections],
             Self::MoneyContextRefresh => &[CacheResource::MoneyContext],
         }

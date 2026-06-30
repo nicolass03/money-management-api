@@ -240,11 +240,10 @@ impl UserDataLoader {
             .map(|d| d.format("%Y-%m-%d").to_string());
         let projection_start_ref = projection_start_date.as_deref();
 
-        // The projection's opening balance is now the sum of every account's initial amount,
-        // each converted into the display currency (replacing the old single
-        // `projection_initial_free_money` setting).
+        // Opening balance = projection setting (display currency) + every account's initial amount
+        // converted into the display currency.
         let account_list = accounts::list_active_with_conn(&mut conn, user_id).await?;
-        let initial_free_money: i32 = account_list
+        let accounts_initial: i32 = account_list
             .iter()
             .map(|account| {
                 convert_amount(
@@ -255,6 +254,8 @@ impl UserDataLoader {
                 )
             })
             .sum();
+        let initial_free_money =
+            user_settings.projection_initial_free_money + accounts_initial;
 
         let rows = build_projection_rows(
             &primary_schedule,
