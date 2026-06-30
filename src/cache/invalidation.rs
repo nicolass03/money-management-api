@@ -9,6 +9,7 @@ pub enum InvalidationScope {
     IncomeChange,
     ScheduleChange,
     SettingsChange,
+    AccountChange,
     MoneyContextRefresh,
 }
 
@@ -63,6 +64,8 @@ impl InvalidationScope {
                 CacheResource::ExpensePeriodView,
                 CacheResource::UpcomingPayable,
             ],
+            // Projection opening balance uses account initial amounts + projection_initial_free_money.
+            Self::AccountChange => &[CacheResource::Projections],
             Self::MoneyContextRefresh => &[CacheResource::MoneyContext],
         }
     }

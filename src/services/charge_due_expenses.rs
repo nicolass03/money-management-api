@@ -5,8 +5,10 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::repos::{
-    connection, expenses as expenses_repo, settings as settings_repo, tags as tags_repo,
+    accounts as accounts_repo, connection, expenses as expenses_repo, settings as settings_repo,
+    tags as tags_repo,
 };
+use crate::services::accounts::{compute_balances, pick_funded_account, pick_richest_account};
 use crate::services::currency::convert_amount;
 use crate::services::exchange_rates::get_exchange_rates;
 use crate::services::pay_periods::{get_pay_dates_in_range, schedule_from_recurring};
@@ -35,6 +37,16 @@ pub async fn charge_due_expenses_for_date(
     let now = Utc::now();
     let due_date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .map_err(|_| ApiError::BadRequest("invalid date".into()))?;
+
+    // Account selection (requirement #6): charge a matching-currency account when it can cover the
+    // expense, otherwise fall back to the display-currency account (allowed to go negative).
+    // Balances are derived once and decremented in-memory as charges land so multiple same-day
+    // charges see up-to-date balances.
+    let accounts = accounts_repo::list_active(pool, user_id).await?;
+    let mut balances = {
+        let mut conn = connection::user_connection(pool, user_id).await?;
+        compute_balances(&mut conn, user_id, &accounts, due_date).await?
+    };
     let mut created = 0;
 
     for recurring in recurring_list {
@@ -51,19 +63,30 @@ pub async fn charge_due_expenses_for_date(
             continue;
         }
 
-        let (amount, currency) = if recurring.currency != display_currency {
-            (
-                convert_amount(
-                    recurring.amount,
-                    recurring.currency,
-                    display_currency,
-                    &rates,
-                ),
-                display_currency,
-            )
-        } else {
-            (recurring.amount, recurring.currency)
-        };
+        // Prefer a same-currency account with enough balance; charge it in the expense's own
+        // currency (no conversion). Otherwise draw from the display-currency account, converting
+        // the amount; if no account exists at all, fall back to the legacy converted insert.
+        let (amount, currency, account_id) =
+            match pick_funded_account(&accounts, &balances, recurring.currency, recurring.amount) {
+                Some(account_id) => (recurring.amount, recurring.currency, Some(account_id)),
+                None => {
+                    let converted = if recurring.currency != display_currency {
+                        convert_amount(recurring.amount, recurring.currency, display_currency, &rates)
+                    } else {
+                        recurring.amount
+                    };
+                    let fallback =
+                        pick_richest_account(&accounts, &balances, display_currency);
+                    (converted, display_currency, fallback)
+                }
+            };
+
+        // Reflect the charge against the chosen account's running balance for later iterations.
+        if let Some(id) = account_id {
+            if let Some(balance) = balances.get_mut(&id) {
+                *balance -= amount;
+            }
+        }
 
         let mut conn = connection::user_connection(pool, user_id).await?;
         let insert_result = conn
@@ -80,6 +103,7 @@ pub async fn charge_due_expenses_for_date(
                         Some(recurring.id),
                         None,
                         None,
+                        account_id,
                         false,
                         recurring.is_subscription,
                         now,

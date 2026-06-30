@@ -15,6 +15,21 @@ pub mod sql_types {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::CurrencyCode;
+
+    accounts (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        name -> Nullable<Text>,
+        currency -> CurrencyCode,
+        initial_amount -> Int4,
+        archived_at -> Nullable<Timestamptz>,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     budget_tags (budget_id, tag_id) {
         budget_id -> Uuid,
         tag_id -> Uuid,
@@ -75,6 +90,7 @@ diesel::table! {
         recurring_id -> Nullable<Uuid>,
         planned_expense_id -> Nullable<Uuid>,
         budget_id -> Nullable<Uuid>,
+        account_id -> Nullable<Uuid>,
     }
 }
 
@@ -95,6 +111,7 @@ diesel::table! {
         schedule_id -> Nullable<Uuid>,
         amount_overridden -> Bool,
         deleted_at -> Nullable<Timestamptz>,
+        account_id -> Nullable<Uuid>,
     }
 }
 
@@ -113,6 +130,7 @@ diesel::table! {
         currency -> CurrencyCode,
         user_id -> Uuid,
         id -> Uuid,
+        account_id -> Nullable<Uuid>,
     }
 }
 
@@ -136,6 +154,7 @@ diesel::table! {
         updated_at -> Timestamptz,
         user_id -> Uuid,
         id -> Uuid,
+        account_id -> Nullable<Uuid>,
     }
 }
 
@@ -231,20 +250,25 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(accounts -> users (user_id));
 diesel::joinable!(budget_tags -> budgets (budget_id));
 diesel::joinable!(budget_tags -> tags (tag_id));
 diesel::joinable!(budgets -> users (user_id));
 diesel::joinable!(expense_tags -> expenses (expense_id));
 diesel::joinable!(expense_tags -> tags (tag_id));
+diesel::joinable!(expenses -> accounts (account_id));
 diesel::joinable!(expenses -> budgets (budget_id));
 diesel::joinable!(expenses -> planned_expenses (planned_expense_id));
 diesel::joinable!(expenses -> recurring_expenses (recurring_id));
 diesel::joinable!(expenses -> users (user_id));
+diesel::joinable!(income -> accounts (account_id));
 diesel::joinable!(income -> income_pay_schedules (schedule_id));
 diesel::joinable!(income -> users (user_id));
+diesel::joinable!(income_pay_schedules -> accounts (account_id));
 diesel::joinable!(income_pay_schedules -> users (user_id));
 diesel::joinable!(planned_expense_tags -> planned_expenses (planned_expense_id));
 diesel::joinable!(planned_expense_tags -> tags (tag_id));
+diesel::joinable!(planned_expenses -> accounts (account_id));
 diesel::joinable!(planned_expenses -> users (user_id));
 diesel::joinable!(recurring_expense_tags -> recurring_expenses (recurring_expense_id));
 diesel::joinable!(recurring_expense_tags -> tags (tag_id));
@@ -257,6 +281,7 @@ diesel::joinable!(user_settings -> income_pay_schedules (primary_schedule_id));
 diesel::joinable!(user_settings -> users (user_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    accounts,
     budget_tags,
     budgets,
     exchange_rate_snapshots,

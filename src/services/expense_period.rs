@@ -738,6 +738,7 @@ mod tests {
                 amount_overridden: false,
                 is_subscription: false,
                 created_at: Utc::now(),
+                account_id: None,
             },
             Vec::new(),
         )
@@ -797,6 +798,7 @@ mod tests {
             currency: CurrencyCode::Usd,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            account_id: None,
         };
 
         let prior_period_expense = expense(1200, "2026-06-20");

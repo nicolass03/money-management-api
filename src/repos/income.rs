@@ -98,6 +98,7 @@ pub async fn create(
     currency: CurrencyCode,
     source: IncomeSource,
     date: chrono::NaiveDate,
+    account_id: Option<Uuid>,
 ) -> Result<IncomeRow, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -112,6 +113,7 @@ pub async fn create(
                     income::source.eq(source),
                     income::date.eq(date),
                     income::schedule_id.eq::<Option<Uuid>>(None),
+                    income::account_id.eq(account_id),
                     income::created_at.eq(now),
                 ))
                 .returning(IncomeRow::as_returning())
@@ -134,6 +136,7 @@ pub async fn update(
     currency: CurrencyCode,
     source: IncomeSource,
     date: chrono::NaiveDate,
+    account_id: Option<Uuid>,
 ) -> Result<Option<IncomeRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     conn.transaction(|conn| {
@@ -149,6 +152,7 @@ pub async fn update(
                 income::currency.eq(currency),
                 income::source.eq(source),
                 income::date.eq(date),
+                income::account_id.eq(account_id),
             ))
             .returning(IncomeRow::as_returning())
             .get_result(conn)
@@ -194,6 +198,7 @@ pub async fn insert_scheduled(
     currency: CurrencyCode,
     date: NaiveDate,
     schedule_id: Uuid,
+    account_id: Option<Uuid>,
     created_at: chrono::DateTime<Utc>,
 ) -> Result<IncomeRow, diesel::result::Error> {
     diesel::insert_into(income::table)
@@ -205,6 +210,7 @@ pub async fn insert_scheduled(
             income::source.eq(IncomeSource::Scheduled),
             income::date.eq(date),
             income::schedule_id.eq(schedule_id),
+            income::account_id.eq(account_id),
             income::created_at.eq(created_at),
         ))
         .returning(IncomeRow::as_returning())

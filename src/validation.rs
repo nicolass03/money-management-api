@@ -87,6 +87,28 @@ pub fn require_positive_amount(amount: i32) -> Result<i32, ApiError> {
     Ok(amount)
 }
 
+/// An account's starting balance. Non-negative (an account can later go negative via charges,
+/// but you can't open one already in the red) and bounded like other money values.
+pub fn require_initial_amount(amount: i32) -> Result<i32, ApiError> {
+    if !(0..=MAX_AMOUNT).contains(&amount) {
+        return Err(ApiError::BadRequest("invalid initial amount".into()));
+    }
+    Ok(amount)
+}
+
+/// Optional account name: trimmed; `None`/blank means an unnamed account.
+pub fn parse_optional_name(name: Option<&str>) -> Result<Option<String>, ApiError> {
+    match name.map(str::trim) {
+        Some(trimmed) if !trimmed.is_empty() => {
+            if trimmed.chars().count() > MAX_NAME_LEN {
+                return Err(ApiError::BadRequest("name is too long".into()));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+        _ => Ok(None),
+    }
+}
+
 pub fn require_projection_free_money(amount: i32) -> Result<i32, ApiError> {
     if !(MIN_PROJECTION_FREE_MONEY..=MAX_PROJECTION_FREE_MONEY).contains(&amount) {
         return Err(ApiError::BadRequest("invalid projection initial free money".into()));

@@ -323,6 +323,7 @@ mod tests {
             currency: CurrencyCode::Usd,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            account_id: None,
         }
     }
 
@@ -339,6 +340,7 @@ mod tests {
             created_at: Utc::now(),
             _amount_overridden: false,
             deleted_at: deleted.then(Utc::now),
+            account_id: None,
         }
     }
 

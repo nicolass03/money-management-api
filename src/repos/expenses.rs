@@ -132,6 +132,7 @@ pub async fn insert_expense(
     recurring_id: Option<Uuid>,
     planned_expense_id: Option<Uuid>,
     budget_id: Option<Uuid>,
+    account_id: Option<Uuid>,
     amount_overridden: bool,
     is_subscription: bool,
     created_at: DateTime<Utc>,
@@ -147,6 +148,7 @@ pub async fn insert_expense(
             expenses::recurring_id.eq(recurring_id),
             expenses::planned_expense_id.eq(planned_expense_id),
             expenses::budget_id.eq(budget_id),
+            expenses::account_id.eq(account_id),
             expenses::amount_overridden.eq(amount_overridden),
             expenses::is_subscription.eq(is_subscription),
             expenses::created_at.eq(created_at),
@@ -165,6 +167,7 @@ pub async fn create_manual(
     date: NaiveDate,
     tag_names: &[String],
     is_subscription: bool,
+    account_id: Option<Uuid>,
 ) -> Result<ExpenseRow, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -181,6 +184,7 @@ pub async fn create_manual(
                 None,
                 None,
                 None,
+                account_id,
                 false,
                 is_subscription,
                 now,
@@ -322,6 +326,7 @@ pub async fn create_early_paid(
     scheduled_date: NaiveDate,
     recurring_id: Option<Uuid>,
     planned_expense_id: Option<Uuid>,
+    account_id: Option<Uuid>,
     amount_overridden: bool,
     is_subscription: bool,
 ) -> Result<ExpenseRow, ApiError> {
@@ -340,6 +345,7 @@ pub async fn create_early_paid(
                 recurring_id,
                 planned_expense_id,
                 None,
+                account_id,
                 amount_overridden,
                 is_subscription,
                 now,

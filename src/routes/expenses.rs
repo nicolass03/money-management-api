@@ -12,8 +12,12 @@ use crate::dto::{
 };
 use crate::error::ApiError;
 use crate::models::{expense_to_response, ExpenseResponse};
-use crate::repos::{expenses as expenses_repo, planned_expenses, recurring_expenses};
-use crate::routes::helpers::get_current_pay_period;
+use crate::repos::{
+    accounts as accounts_repo, connection, expenses as expenses_repo, planned_expenses,
+    recurring_expenses,
+};
+use crate::routes::helpers::{get_current_pay_period, resolve_account};
+use crate::services::accounts::{compute_balances, pick_funded_account, pick_richest_account};
 use crate::services::pay_periods::{get_pay_dates_in_range, is_date_in_period, schedule_from_recurring};
 use crate::state::AppState;
 use crate::validation::{
@@ -92,8 +96,11 @@ pub async fn create_expense(
     let name = require_non_empty_name(&body.name)?;
     let tags = parse_tag_names(&body.tags)?;
     let amount = require_positive_amount(body.amount)?;
-    let currency = parse_currency(&body.currency)?;
+    let submitted_currency = parse_currency(&body.currency)?;
     let date = parse_date(&body.date)?;
+    // Currency follows the selected account (if any), keeping derived balances single-currency.
+    let (account_id, currency) =
+        resolve_account(&state.db_pool, user.sub, body.account_id, submitted_currency).await?;
 
     let period = get_current_pay_period(&state.db_pool, user.sub)
         .await?
@@ -114,6 +121,7 @@ pub async fn create_expense(
         date,
         &tags,
         body.is_subscription,
+        account_id,
     )
     .await?;
     state
@@ -206,6 +214,16 @@ pub async fn early_pay_expense(
         return Err(ApiError::BadRequest("scheduled date must be in the future".into()));
     }
 
+    // Draw the early payment from a funded account in its currency (else the richest such
+    // account, which may go negative; else leave unassigned). Keeps currency-follows-account.
+    let account_id = {
+        let accounts = accounts_repo::list_active(&state.db_pool, user.sub).await?;
+        let mut conn = connection::user_connection(&state.db_pool, user.sub).await?;
+        let balances = compute_balances(&mut conn, user.sub, &accounts, paid_date).await?;
+        pick_funded_account(&accounts, &balances, currency, amount)
+            .or_else(|| pick_richest_account(&accounts, &balances, currency))
+    };
+
     let row = if body.source_type == "recurring" {
         let recurring_id = body.recurring_id.ok_or_else(|| {
             ApiError::BadRequest("invalid recurring expense".into())
@@ -248,6 +266,7 @@ pub async fn early_pay_expense(
             scheduled_date,
             Some(recurring_id),
             None,
+            account_id,
             amount_overridden,
             recurring.is_subscription,
         )
@@ -284,6 +303,7 @@ pub async fn early_pay_expense(
             scheduled_date,
             None,
             Some(planned_id),
+            account_id,
             amount_overridden,
             false,
         )

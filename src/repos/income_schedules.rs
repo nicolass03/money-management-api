@@ -55,6 +55,7 @@ pub async fn create(
     frequency: PayFrequency,
     amount: i32,
     currency: CurrencyCode,
+    account_id: Option<Uuid>,
 ) -> Result<IncomePayScheduleRow, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -68,6 +69,7 @@ pub async fn create(
                     income_pay_schedules::frequency.eq(frequency),
                     income_pay_schedules::amount.eq(amount),
                     income_pay_schedules::currency.eq(currency),
+                    income_pay_schedules::account_id.eq(account_id),
                     income_pay_schedules::created_at.eq(now),
                     income_pay_schedules::updated_at.eq(now),
                 ))
@@ -93,6 +95,7 @@ pub async fn update(
     frequency: PayFrequency,
     amount: i32,
     currency: CurrencyCode,
+    account_id: Option<Uuid>,
 ) -> Result<Option<IncomePayScheduleRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -109,6 +112,7 @@ pub async fn update(
                 income_pay_schedules::frequency.eq(frequency),
                 income_pay_schedules::amount.eq(amount),
                 income_pay_schedules::currency.eq(currency),
+                income_pay_schedules::account_id.eq(account_id),
                 income_pay_schedules::updated_at.eq(now),
             ))
             .returning(IncomePayScheduleRow::as_returning())
