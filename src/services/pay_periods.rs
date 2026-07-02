@@ -274,6 +274,56 @@ pub fn get_projection_periods(
     period_map.into_values().collect()
 }
 
+/// Pay periods whose `[start_date, end_date]` overlaps `[from, to]` (inclusive), in pay-date order.
+pub fn get_pay_periods_overlapping_range(
+    schedule: &PayScheduleInput,
+    from: &str,
+    to: &str,
+) -> Vec<PayPeriod> {
+    if compare_iso(from, to) > 0 {
+        return Vec::new();
+    }
+
+    let mut periods = Vec::new();
+    let mut pay_date = get_period_containing(schedule, from).pay_date;
+
+    for _ in 0..400 {
+        let period = get_period_for_pay_date(schedule, &pay_date);
+
+        if compare_iso(&period.start_date, to) > 0 {
+            break;
+        }
+
+        if compare_iso(&period.end_date, from) >= 0 {
+            periods.push(period);
+        }
+
+        pay_date = get_next_pay_date(schedule, &add_days(&pay_date, 1));
+    }
+
+    periods
+}
+
+fn clip_period_to_range(period: &PayPeriod, from: &str, to: &str) -> PayPeriod {
+    PayPeriod {
+        pay_date: period.pay_date.clone(),
+        start_date: if compare_iso(&period.start_date, from) > 0 {
+            period.start_date.clone()
+        } else {
+            from.to_string()
+        },
+        end_date: if compare_iso(&period.end_date, to) < 0 {
+            period.end_date.clone()
+        } else {
+            to.to_string()
+        },
+    }
+}
+
+pub fn clip_period_to_report_range(period: &PayPeriod, from: &str, to: &str) -> PayPeriod {
+    clip_period_to_range(period, from, to)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +351,15 @@ mod tests {
         assert_eq!(period.start_date, "2026-06-26");
         assert_eq!(period.end_date, "2026-07-25");
         assert_eq!(period.pay_date, "2026-07-25");
+    }
+
+    #[test]
+    fn overlapping_pay_periods_cover_range() {
+        let schedule = monthly_schedule();
+        let periods = get_pay_periods_overlapping_range(&schedule, "2026-03-01", "2026-05-31");
+        assert_eq!(periods.len(), 4);
+        assert_eq!(periods[0].pay_date, "2026-03-25");
+        assert_eq!(periods[2].pay_date, "2026-05-25");
+        assert_eq!(periods[3].pay_date, "2026-06-25");
     }
 }

@@ -250,6 +250,12 @@ pub fn build_expense_period_view(
 /// `recurring_id`, `planned_expense_id`, and `budget_id` are all `None`, converted to the display
 /// currency. This intentionally reads the raw expense rows rather than the period `items` so it is
 /// unaffected by `include_projected` and budget-summary aggregation.
+fn is_manual_extra_expense(row: &ExpenseRow) -> bool {
+    row.recurring_id.is_none()
+        && row.planned_expense_id.is_none()
+        && row.budget_id.is_none()
+}
+
 pub(crate) fn compute_extra_spent(
     expenses: &[(ExpenseRow, Vec<String>)],
     period: &PayPeriod,
@@ -258,17 +264,50 @@ pub(crate) fn compute_extra_spent(
 ) -> i32 {
     expenses
         .iter()
-        .filter(|(row, _)| {
-            row.recurring_id.is_none()
-                && row.planned_expense_id.is_none()
-                && row.budget_id.is_none()
-        })
+        .filter(|(row, _)| is_manual_extra_expense(row))
         .filter(|(row, _)| {
             let date = row.date.format("%Y-%m-%d").to_string();
             is_date_in_period(&date, period)
         })
         .map(|(row, _)| convert_amount(row.amount, row.currency, display_currency, rates))
         .sum()
+}
+
+pub fn compute_extra_spent_by_tag(
+    expenses: &[(ExpenseRow, Vec<String>)],
+    from: &str,
+    to: &str,
+    display_currency: CurrencyCode,
+    rates: &ExchangeRates,
+) -> Vec<TagAmountEntry> {
+    let period = PayPeriod {
+        pay_date: to.to_string(),
+        start_date: from.to_string(),
+        end_date: to.to_string(),
+    };
+
+    let mut tag_totals: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+
+    for (row, tags) in expenses {
+        if !is_manual_extra_expense(row) {
+            continue;
+        }
+        let date = row.date.format("%Y-%m-%d").to_string();
+        if !is_date_in_period(&date, &period) {
+            continue;
+        }
+        let converted = convert_amount(row.amount, row.currency, display_currency, rates);
+        for tag in tags {
+            *tag_totals.entry(tag.clone()).or_insert(0) += converted;
+        }
+    }
+
+    let mut by_tag: Vec<TagAmountEntry> = tag_totals
+        .into_iter()
+        .map(|(tag, amount)| TagAmountEntry { tag, amount })
+        .collect();
+    by_tag.sort_by(|a, b| b.amount.cmp(&a.amount));
+    by_tag
 }
 
 pub fn build_chart_summary(

@@ -4,7 +4,9 @@ use axum::Json;
 use crate::auth::extractor::AuthenticatedUser;
 use crate::dto::ReportSummaryQuery;
 use crate::error::ApiError;
-use crate::repos::{budgets as budgets_repo, expenses as expenses_repo, income as income_repo};
+use crate::repos::{
+    expenses as expenses_repo, income as income_repo, income_schedules as income_schedules_repo,
+};
 use crate::services::exchange_rates::get_exchange_rates;
 use crate::services::pay_periods::compare_iso;
 use crate::services::reports::{build_report_summary, prior_period_range, validate_report_range};
@@ -43,14 +45,18 @@ pub async fn get_report_summary(
     let income =
         income_repo::list_in_range(&state.db_pool, user.sub, load_from, to_date).await?;
 
-    let budgets = budgets_repo::list_all(&state.db_pool, user.sub).await?;
+    let primary_schedule = if let Some(schedule_id) = settings.primary_schedule_id {
+        income_schedules_repo::find_by_id(&state.db_pool, user.sub, schedule_id).await?
+    } else {
+        None
+    };
 
     let response = build_report_summary(
         &query.from,
         &query.to,
         &expenses,
         &income,
-        &budgets,
+        primary_schedule.as_ref(),
         settings.display_currency,
         rates,
         query.compare_prior,

@@ -1,15 +1,16 @@
-use std::collections::HashMap;
-
 use chrono::{Datelike, NaiveDate};
 use serde::Serialize;
-use uuid::Uuid;
 
-use crate::models::{BudgetRow, CurrencyCode, ExpenseRow, IncomeRow};
+use crate::models::{CurrencyCode, ExpenseRow, IncomePayScheduleRow, IncomeRow};
 use crate::services::currency::{convert_amount, ExchangeRates};
 use crate::services::expense_period::{
-    build_chart_summary, compute_extra_spent, SubscriptionSplit, TagAmountEntry,
+    build_chart_summary, compute_extra_spent, compute_extra_spent_by_tag, SubscriptionSplit,
+    TagAmountEntry,
 };
-use crate::services::pay_periods::{add_days, is_date_in_period, PayPeriod};
+use crate::services::pay_periods::{
+    add_days, clip_period_to_report_range, get_pay_periods_overlapping_range, is_date_in_period,
+    schedule_from_income, PayPeriod,
+};
 
 pub const MAX_REPORT_RANGE_DAYS: i64 = 730;
 
@@ -62,17 +63,25 @@ pub struct ReportTimeBucket {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReportTimeSeries {
-    pub granularity: ReportTimeGranularity,
-    pub buckets: Vec<ReportTimeBucket>,
+pub struct ReportExtraSpentBucket {
+    pub pay_date: String,
+    pub start_date: String,
+    pub end_date: String,
+    pub label: String,
+    pub extra_spent: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReportBudgetSpend {
-    pub budget_id: Uuid,
-    pub name: String,
-    pub amount: i32,
+pub struct ReportExtraSpentTimeSeries {
+    pub buckets: Vec<ReportExtraSpentBucket>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportTimeSeries {
+    pub granularity: ReportTimeGranularity,
+    pub buckets: Vec<ReportTimeBucket>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,9 +93,10 @@ pub struct ReportSummaryResponse {
     pub kpis: ReportKpis,
     pub prior_period: Option<ReportPriorPeriod>,
     pub by_tag: Vec<TagAmountEntry>,
+    pub extra_spent_by_tag: Vec<TagAmountEntry>,
     pub subscription_split: SubscriptionSplit,
     pub time_series: ReportTimeSeries,
-    pub top_budgets: Vec<ReportBudgetSpend>,
+    pub extra_spent_time_series: ReportExtraSpentTimeSeries,
 }
 
 pub fn validate_report_range(from: &str, to: &str) -> Result<(NaiveDate, NaiveDate, i64), String> {
@@ -292,15 +302,15 @@ fn build_time_series(
         .map(|(start_date, end_date, label)| {
             let period = pay_period(&start_date, &end_date);
             let (income, _) = sum_income_in_period(income_rows, &period, display_currency, rates);
-            let (expenses, _) =
+            let (bucket_expenses, _) =
                 sum_expenses_in_period(expenses, &period, display_currency, rates);
             ReportTimeBucket {
                 start_date,
                 end_date,
                 label,
                 income,
-                expenses,
-                net: income - expenses,
+                expenses: bucket_expenses,
+                net: income - bucket_expenses,
             }
         })
         .collect();
@@ -311,46 +321,37 @@ fn build_time_series(
     }
 }
 
-fn build_top_budgets(
+fn build_extra_spent_time_series(
     expenses: &[(ExpenseRow, Vec<String>)],
-    budgets: &[BudgetRow],
     from: &str,
     to: &str,
+    primary_schedule: Option<&IncomePayScheduleRow>,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
-) -> Vec<ReportBudgetSpend> {
-    let period = pay_period(from, to);
-    let budget_names: HashMap<Uuid, &str> = budgets
-        .iter()
-        .map(|b| (b.id, b.name.as_str()))
-        .collect();
-    let mut totals: HashMap<Uuid, i32> = HashMap::new();
+) -> ReportExtraSpentTimeSeries {
+    let Some(schedule_row) = primary_schedule else {
+        return ReportExtraSpentTimeSeries { buckets: Vec::new() };
+    };
 
-    for (row, _) in expenses {
-        let Some(budget_id) = row.budget_id else {
-            continue;
-        };
-        let date = row.date.format("%Y-%m-%d").to_string();
-        if !is_date_in_period(&date, &period) {
-            continue;
-        }
-        let converted = convert_amount(row.amount, row.currency, display_currency, rates);
-        *totals.entry(budget_id).or_insert(0) += converted;
-    }
+    let schedule = schedule_from_income(schedule_row);
+    let periods = get_pay_periods_overlapping_range(&schedule, from, to);
 
-    let mut entries: Vec<ReportBudgetSpend> = totals
+    let buckets = periods
         .into_iter()
-        .filter_map(|(budget_id, amount)| {
-            budget_names.get(&budget_id).map(|name| ReportBudgetSpend {
-                budget_id,
-                name: (*name).to_string(),
-                amount,
-            })
+        .map(|period| {
+            let clipped = clip_period_to_report_range(&period, from, to);
+            let extra_spent = compute_extra_spent(expenses, &clipped, display_currency, rates);
+            ReportExtraSpentBucket {
+                label: period.pay_date.clone(),
+                pay_date: period.pay_date,
+                start_date: period.start_date,
+                end_date: period.end_date,
+                extra_spent,
+            }
         })
         .collect();
-    entries.sort_by(|a, b| b.amount.cmp(&a.amount));
-    entries.truncate(5);
-    entries
+
+    ReportExtraSpentTimeSeries { buckets }
 }
 
 pub fn build_report_summary(
@@ -358,7 +359,7 @@ pub fn build_report_summary(
     to: &str,
     expenses: &[(ExpenseRow, Vec<String>)],
     income_rows: &[IncomeRow],
-    budgets: &[BudgetRow],
+    primary_schedule: Option<&IncomePayScheduleRow>,
     display_currency: CurrencyCode,
     rates: ExchangeRates,
     compare_prior: bool,
@@ -405,11 +406,13 @@ pub fn build_report_summary(
         display_currency,
         &rates,
     );
-    let top_budgets = build_top_budgets(
+    let extra_spent_by_tag =
+        compute_extra_spent_by_tag(expenses, from, to, display_currency, &rates);
+    let extra_spent_time_series = build_extra_spent_time_series(
         expenses,
-        budgets,
         from,
         to,
+        primary_schedule,
         display_currency,
         &rates,
     );
@@ -425,9 +428,10 @@ pub fn build_report_summary(
         kpis,
         prior_period,
         by_tag: chart.by_tag,
+        extra_spent_by_tag,
         subscription_split: chart.subscription_split,
         time_series,
-        top_budgets,
+        extra_spent_time_series,
     })
 }
 
