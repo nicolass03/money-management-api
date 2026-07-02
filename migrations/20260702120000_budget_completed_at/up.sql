@@ -1,0 +1,1 @@
+ALTER TABLE budgets ADD COLUMN completed_at TIMESTAMPTZ;

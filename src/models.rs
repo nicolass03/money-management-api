@@ -194,6 +194,7 @@ pub struct BudgetRow {
     pub end_date: Option<NaiveDate>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Queryable, Selectable)]
@@ -404,6 +405,7 @@ pub struct BudgetResponse {
     pub end_date: Option<NaiveDate>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
     pub tags: Vec<String>,
     pub spent: i32,
 }
@@ -509,6 +511,7 @@ pub fn budget_to_response(row: BudgetRow, tags: Vec<String>, spent: i32) -> Budg
         end_date: row.end_date,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        completed_at: row.completed_at,
         tags,
         spent,
     }

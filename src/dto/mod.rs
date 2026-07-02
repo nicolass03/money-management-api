@@ -247,6 +247,12 @@ pub struct UpdateBudgetRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CompleteBudgetRequest {
+    pub as_of: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateBudgetExpenseRequest {
     pub name: Option<String>,
     pub amount: i32,

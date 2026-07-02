@@ -4,14 +4,16 @@ use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
 use crate::cache::InvalidationScope;
-use crate::dto::{CreateBudgetExpenseRequest, CreateBudgetRequest, UpdateBudgetRequest};
+use crate::dto::{
+    CompleteBudgetRequest, CreateBudgetExpenseRequest, CreateBudgetRequest, UpdateBudgetRequest,
+};
 use crate::error::ApiError;
 use crate::models::{budget_to_response, expense_to_response, BudgetResponse, ExpenseResponse};
 use crate::repos::{budgets as budgets_repo, expenses as expenses_repo};
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, parse_tag_names, regex_like_date, require_non_empty_name,
-    require_positive_amount,
+    require_positive_amount, today_iso,
 };
 
 fn parse_optional_date(value: &Option<String>) -> Result<Option<chrono::NaiveDate>, ApiError> {
@@ -119,6 +121,13 @@ pub async fn update_budget(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateBudgetRequest>,
 ) -> Result<Json<BudgetResponse>, ApiError> {
+    let existing = budgets_repo::find_by_id(&state.db_pool, user.sub, id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if existing.completed_at.is_some() {
+        return Err(ApiError::BadRequest("budget is completed".into()));
+    }
+
     let req = CreateBudgetRequest {
         name: body.name,
         amount: body.amount,
@@ -163,6 +172,33 @@ pub async fn delete_budget(
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
+pub async fn complete_budget(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CompleteBudgetRequest>,
+) -> Result<Json<BudgetResponse>, ApiError> {
+    let as_of = match &body.as_of {
+        Some(value) if !value.trim().is_empty() => {
+            if !regex_like_date(value) {
+                return Err(ApiError::BadRequest("invalid date".into()));
+            }
+            parse_date(value)?
+        }
+        _ => parse_date(&today_iso())?,
+    };
+
+    let row = budgets_repo::complete(&state.db_pool, user.sub, id, as_of).await?;
+    let (_, tags, spent) = budgets_repo::find_with_tags_and_spent(&state.db_pool, user.sub, id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    state
+        .cache
+        .invalidate(InvalidationScope::BudgetChange, user.sub)
+        .await;
+    Ok(Json(budget_to_response(row, tags, spent)))
+}
+
 pub async fn list_budget_expenses(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
@@ -189,6 +225,9 @@ pub async fn create_budget_expense(
         .await?
         .ok_or(ApiError::NotFound)?;
     let (budget_row, _budget_tags, _spent) = budget;
+    if budget_row.completed_at.is_some() {
+        return Err(ApiError::BadRequest("budget is completed".into()));
+    }
     let amount = require_positive_amount(body.amount)?;
     let date = parse_date(&body.date)?;
 

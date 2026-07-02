@@ -50,6 +50,7 @@ diesel::table! {
         updated_at -> Timestamptz,
         user_id -> Uuid,
         id -> Uuid,
+        completed_at -> Nullable<Timestamptz>,
     }
 }
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use diesel::dsl::sql;
 use diesel::prelude::*;
 use diesel::sql_types::BigInt;
@@ -276,6 +276,86 @@ pub async fn create_budget_expense(
         .await?;
 
     Ok(result)
+}
+
+async fn earliest_expense_date(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+    budget_id: Uuid,
+) -> Result<Option<NaiveDate>, ApiError> {
+    expenses_table::table
+        .filter(expenses_table::user_id.eq(user_id))
+        .filter(expenses_table::budget_id.eq(budget_id))
+        .select(diesel::dsl::min(expenses_table::date))
+        .first(conn)
+        .await
+        .map_err(ApiError::from)
+}
+
+/// Marks a budget complete: sets `completed_at`, closes the date range, and freezes projection
+/// to actual spent. Open-ended budgets become dated (start from earliest expense or `created_at`).
+pub async fn complete(
+    pool: &DbPool,
+    user_id: Uuid,
+    id: Uuid,
+    as_of: NaiveDate,
+) -> Result<BudgetRow, ApiError> {
+    let existing = find_by_id(pool, user_id, id).await?;
+    let Some(budget) = existing else {
+        return Err(ApiError::NotFound);
+    };
+
+    if budget.completed_at.is_some() {
+        return Err(ApiError::BadRequest("budget already completed".into()));
+    }
+
+    let has_start = budget.start_date.is_some();
+    let has_end = budget.end_date.is_some();
+    if has_start != has_end {
+        return Err(ApiError::BadRequest("invalid budget date state".into()));
+    }
+
+    let as_of_s = as_of.format("%Y-%m-%d").to_string();
+    if let Some(end) = budget.end_date {
+        let end_s = end.format("%Y-%m-%d").to_string();
+        if as_of_s > end_s {
+            return Err(ApiError::BadRequest("budget already ended".into()));
+        }
+    }
+
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    let now = Utc::now();
+    let start_date = if has_start {
+        budget.start_date
+    } else {
+        let earliest = earliest_expense_date(&mut conn, user_id, id).await?;
+        Some(earliest.unwrap_or_else(|| budget.created_at.date_naive()))
+    };
+
+    conn.transaction(|conn| {
+        Box::pin(async move {
+            let updated = diesel::update(
+                budgets::table
+                    .filter(budgets::user_id.eq(user_id))
+                    .filter(budgets::id.eq(id))
+                    .filter(budgets::completed_at.is_null()),
+            )
+            .set((
+                budgets::start_date.eq(start_date),
+                budgets::end_date.eq(as_of),
+                budgets::completed_at.eq(now),
+                budgets::updated_at.eq(now),
+            ))
+            .returning(BudgetRow::as_returning())
+            .get_result(conn)
+            .await?;
+
+            settings::bump_cache_revision(conn, user_id).await?;
+            Ok::<BudgetRow, diesel::result::Error>(updated)
+        })
+    })
+    .await
+    .map_err(ApiError::from)
 }
 
 pub async fn delete_budget_expense(

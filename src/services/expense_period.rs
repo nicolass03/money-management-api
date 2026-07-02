@@ -482,6 +482,7 @@ pub(crate) fn get_expense_items_in_period(
                 budget.row.end_date,
                 spent,
                 today,
+                budget.row.completed_at.as_ref(),
             );
             let end_s = budget.row.end_date.unwrap().format("%Y-%m-%d").to_string();
             if projection_amount <= 0 && today > end_s.as_str() {

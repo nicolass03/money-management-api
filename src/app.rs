@@ -146,6 +146,10 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
                 .delete(routes::budgets::delete_budget),
         )
         .route(
+            "/budgets/{id}/complete",
+            axum::routing::post(routes::budgets::complete_budget),
+        )
+        .route(
             "/budgets/{id}/expenses",
             get(routes::budgets::list_budget_expenses).post(routes::budgets::create_budget_expense),
         )
