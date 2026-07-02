@@ -243,27 +243,13 @@ pub async fn create_budget_expense(
     let result = conn
         .transaction(|conn| {
             Box::pin(async move {
-                let budget: BudgetRow = budgets::table
+                let _budget: BudgetRow = budgets::table
                     .filter(budgets::user_id.eq(user_id))
                     .filter(budgets::id.eq(budget_id))
                     .for_update()
                     .select(BudgetRow::as_select())
                     .first(conn)
                     .await?;
-
-                let spent: i64 = expenses_table::table
-                    .filter(expenses_table::user_id.eq(user_id))
-                    .filter(expenses_table::budget_id.eq(budget_id))
-                    .select(sql::<BigInt>("coalesce(sum(amount), 0)"))
-                    .first(conn)
-                    .await?;
-
-                let spent = i32::try_from(spent).unwrap_or(i32::MAX);
-                if amount > budget.amount.saturating_sub(spent) {
-                    return Err(diesel::result::Error::SerializationError(
-                        "amount exceeds remaining budget".into(),
-                    ));
-                }
 
                 let expense = expenses::insert_expense(
                     conn,
@@ -287,17 +273,9 @@ pub async fn create_budget_expense(
                 Ok::<crate::models::ExpenseRow, diesel::result::Error>(expense)
             })
         })
-        .await;
+        .await?;
 
-    match result {
-        Ok(expense) => Ok(expense),
-        Err(diesel::result::Error::SerializationError(message))
-            if message.to_string() == "amount exceeds remaining budget" =>
-        {
-            Err(ApiError::BadRequest("amount exceeds remaining budget".into()))
-        }
-        Err(error) => Err(ApiError::from(error)),
-    }
+    Ok(result)
 }
 
 pub async fn delete_budget_expense(

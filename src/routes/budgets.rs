@@ -8,9 +8,6 @@ use crate::dto::{CreateBudgetExpenseRequest, CreateBudgetRequest, UpdateBudgetRe
 use crate::error::ApiError;
 use crate::models::{budget_to_response, expense_to_response, BudgetResponse, ExpenseResponse};
 use crate::repos::{budgets as budgets_repo, expenses as expenses_repo};
-use crate::routes::helpers::get_current_pay_period;
-use crate::services::budget_status::is_dated_budget;
-use crate::services::pay_periods::is_date_in_period;
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, parse_tag_names, regex_like_date, require_non_empty_name,
@@ -194,21 +191,6 @@ pub async fn create_budget_expense(
     let (budget_row, _budget_tags, _spent) = budget;
     let amount = require_positive_amount(body.amount)?;
     let date = parse_date(&body.date)?;
-    let date_s = date.format("%Y-%m-%d").to_string();
-
-    let dated = is_dated_budget(budget_row.start_date, budget_row.end_date);
-    if !dated {
-        let period = get_current_pay_period(&state.db_pool, user.sub)
-            .await?
-            .ok_or_else(|| {
-                ApiError::BadRequest("set a primary pay schedule in settings first".into())
-            })?;
-        if !is_date_in_period(&date_s, &period) {
-            return Err(ApiError::BadRequest(
-                "date must fall within the current pay period".into(),
-            ));
-        }
-    }
 
     let name = body
         .name
