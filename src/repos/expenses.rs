@@ -25,7 +25,7 @@ pub async fn list_all_with_conn(
 ) -> Result<Vec<ExpenseRow>, ApiError> {
     expenses::table
         .filter(expenses::user_id.eq(user_id))
-        .order(expenses::date.desc())
+        .order(expenses::created_at.desc())
         .select(ExpenseRow::as_select())
         .load(conn)
         .await
@@ -76,7 +76,7 @@ pub async fn list_with_tags_in_range_with_conn(
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::date.ge(from))
         .filter(expenses::date.le(to))
-        .order(expenses::date.desc())
+        .order(expenses::created_at.desc())
         .select(ExpenseRow::as_select())
         .load(conn)
         .await
@@ -373,7 +373,7 @@ pub async fn list_by_budget(
     let rows = expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::budget_id.eq(budget_id))
-        .order(expenses::date.desc())
+        .order(expenses::created_at.desc())
         .select(ExpenseRow::as_select())
         .load(&mut conn)
         .await?;

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -11,7 +11,8 @@ use crate::models::{
 use crate::services::currency::{convert_amount, ExchangeRates};
 use crate::services::expense_period::{
     build_expense_period_materialized, get_expense_items_in_period, to_budget_with_tags,
-    to_expense_with_tags, to_planned_with_tags, to_recurring_with_tags, GetExpenseItemsOptions,
+    to_expense_with_tags, to_planned_with_tags, to_recurring_with_tags, ExpenseItemSort,
+    GetExpenseItemsOptions,
 };
 use crate::services::pay_periods::{
     get_pay_dates_in_range, get_projection_periods, is_date_in_period, schedule_from_income,
@@ -49,6 +50,25 @@ pub struct ProjectionExpenseItem {
     pub tags: Vec<String>,
     pub is_subscription: bool,
     pub projected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+/// Sort expense rows for list display. Projections use chronological date; the expenses tab uses
+/// newest `created_at` first.
+pub(crate) fn sort_projection_expense_items(
+    items: &mut [ProjectionExpenseItem],
+    sort: ExpenseItemSort,
+) {
+    match sort {
+        ExpenseItemSort::CreatedAtDesc => items.sort_by(|a, b| match (&a.created_at, &b.created_at) {
+            (Some(a_ts), Some(b_ts)) => b_ts.cmp(a_ts),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => b.date.cmp(&a.date),
+        }),
+        ExpenseItemSort::DateAsc => items.sort_by(|a, b| a.date.cmp(&b.date)),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -267,6 +287,7 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
                 &materialized,
                 GetExpenseItemsOptions {
                     include_budget_summaries: false,
+                    sort: ExpenseItemSort::DateAsc,
                 },
             )
             .into_iter()

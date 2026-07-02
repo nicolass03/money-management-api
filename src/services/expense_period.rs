@@ -20,7 +20,7 @@ use crate::services::pay_periods::{
     add_months, get_pay_dates_in_range, get_period_containing, is_date_in_period,
     schedule_from_income, schedule_from_recurring, PayPeriod,
 };
-use crate::services::projections::ProjectionExpenseItem;
+use crate::services::projections::{sort_projection_expense_items, ProjectionExpenseItem};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpensePeriodKey {
@@ -120,6 +120,15 @@ pub(crate) struct BudgetWithTags {
 
 pub(crate) struct GetExpenseItemsOptions {
     pub include_budget_summaries: bool,
+    pub sort: ExpenseItemSort,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ExpenseItemSort {
+    /// Expenses tab: newest materialized row first.
+    CreatedAtDesc,
+    /// Projections tab: chronological by charge date.
+    DateAsc,
 }
 
 pub(crate) struct ExpensePeriodMaterialized {
@@ -186,6 +195,7 @@ pub fn build_expense_period_view(
             &materialized,
             GetExpenseItemsOptions {
                 include_budget_summaries: true,
+                sort: ExpenseItemSort::CreatedAtDesc,
             },
         )
     } else {
@@ -196,6 +206,7 @@ pub fn build_expense_period_view(
             &period.end_date,
             display_currency,
             rates,
+            ExpenseItemSort::CreatedAtDesc,
         )
     };
 
@@ -391,6 +402,7 @@ pub(crate) fn get_expense_items_in_period(
             tags: expense.tags.clone(),
             is_subscription: expense.row.is_subscription,
             projected: false,
+            created_at: Some(expense.row.created_at),
         });
     }
 
@@ -432,6 +444,7 @@ pub(crate) fn get_expense_items_in_period(
                 tags: recurring.tags.clone(),
                 is_subscription: recurring.row.is_subscription,
                 projected: true,
+                created_at: None,
             });
         }
     }
@@ -468,6 +481,7 @@ pub(crate) fn get_expense_items_in_period(
             tags: planned.tags.clone(),
             is_subscription: false,
             projected: true,
+            created_at: None,
         });
     }
 
@@ -527,6 +541,7 @@ pub(crate) fn get_expense_items_in_period(
                     budget.row.end_date,
                     today,
                 ),
+                created_at: None,
             });
         }
     }
@@ -559,11 +574,12 @@ pub(crate) fn get_expense_items_in_period(
                 tags: budget.tags.clone(),
                 is_subscription: false,
                 projected: false,
+                created_at: None,
             });
         }
     }
 
-    items.sort_by(|a, b| a.date.cmp(&b.date));
+    sort_projection_expense_items(&mut items, options.sort);
     items
 }
 
@@ -574,6 +590,7 @@ fn get_actual_expenses_in_date_range(
     end_date: &str,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
+    sort: ExpenseItemSort,
 ) -> Vec<ProjectionExpenseItem> {
     let period = PayPeriod {
         pay_date: end_date.to_string(),
@@ -581,7 +598,7 @@ fn get_actual_expenses_in_date_range(
         end_date: end_date.to_string(),
     };
 
-    expense_list
+    let mut items: Vec<ProjectionExpenseItem> = expense_list
         .iter()
         .filter(|expense| {
             let date = expense.row.date.format("%Y-%m-%d").to_string();
@@ -634,9 +651,13 @@ fn get_actual_expenses_in_date_range(
                 tags: expense.tags.clone(),
                 is_subscription: expense.row.is_subscription,
                 projected: false,
+                created_at: Some(expense.row.created_at),
             }
         })
-        .collect()
+        .collect();
+
+    sort_projection_expense_items(&mut items, sort);
+    items
 }
 
 fn to_display(
