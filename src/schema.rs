@@ -160,6 +160,26 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::CurrencyCode;
+
+    projection_history (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        schedule_id -> Uuid,
+        pay_date -> Date,
+        start_date -> Date,
+        end_date -> Date,
+        income -> Int4,
+        planned_spent -> Int4,
+        free -> Int4,
+        cumulative -> Int4,
+        currency -> CurrencyCode,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     recurring_expense_tags (recurring_expense_id, tag_id) {
         recurring_expense_id -> Uuid,
         tag_id -> Uuid,
@@ -184,6 +204,7 @@ diesel::table! {
         user_id -> Uuid,
         id -> Uuid,
         cancel_reminder_enabled -> Bool,
+        deleted_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -271,6 +292,8 @@ diesel::joinable!(planned_expense_tags -> planned_expenses (planned_expense_id))
 diesel::joinable!(planned_expense_tags -> tags (tag_id));
 diesel::joinable!(planned_expenses -> accounts (account_id));
 diesel::joinable!(planned_expenses -> users (user_id));
+diesel::joinable!(projection_history -> income_pay_schedules (schedule_id));
+diesel::joinable!(projection_history -> users (user_id));
 diesel::joinable!(recurring_expense_tags -> recurring_expenses (recurring_expense_id));
 diesel::joinable!(recurring_expense_tags -> tags (tag_id));
 diesel::joinable!(recurring_expenses -> users (user_id));
@@ -292,6 +315,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     income_pay_schedules,
     planned_expense_tags,
     planned_expenses,
+    projection_history,
     recurring_expense_tags,
     recurring_expenses,
     savings,

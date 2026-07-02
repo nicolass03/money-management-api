@@ -75,6 +75,15 @@ fn default_include_past() -> bool {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProjectionPeriodItemsQuery {
+    /// Closing pay date (`YYYY-MM-DD`) identifying the period whose expense items are wanted.
+    pub pay_date: String,
+    /// Client local calendar date (`YYYY-MM-DD`); falls back to UTC today.
+    pub as_of: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MoneyContextQuery {
     #[serde(default)]
     pub force_refresh: bool,

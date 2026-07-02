@@ -6,6 +6,7 @@ pub mod expenses;
 pub mod income;
 pub mod income_schedules;
 pub mod planned_expenses;
+pub mod projection_history;
 pub mod recurring_expenses;
 pub mod savings;
 pub mod settings;

@@ -115,6 +115,14 @@ pub async fn update_schedule(
     state
         .cache
         .invalidate(InvalidationScope::ScheduleChange, user.sub).await;
+
+    // Editing the primary schedule can move its period boundaries, invalidating the frozen past
+    // rows computed under the old anchor/frequency. Non-primary edits don't affect frozen periods
+    // (past income comes from actual rows, not schedule definitions), so only rebuild for primary.
+    let settings = state.loader.user_settings(user.sub).await?;
+    if settings.primary_schedule_id == Some(id) {
+        crate::services::projection_history::reinitialize_history(&state.db_pool, user.sub).await?;
+    }
     Ok(Json(schedule.into()))
 }
 

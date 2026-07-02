@@ -89,6 +89,24 @@ pub struct AccountRow {
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::projection_history)]
+pub struct ProjectionHistoryRow {
+    pub id: Uuid,
+    #[diesel(column_name = user_id)]
+    pub _user_id: Uuid,
+    pub schedule_id: Uuid,
+    pub pay_date: NaiveDate,
+    pub start_date: NaiveDate,
+    pub end_date: NaiveDate,
+    pub income: i32,
+    pub planned_spent: i32,
+    pub free: i32,
+    pub cumulative: i32,
+    pub currency: CurrencyCode,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = crate::schema::income_pay_schedules)]
 pub struct IncomePayScheduleRow {
     pub id: Uuid,
@@ -164,6 +182,8 @@ pub struct RecurringExpenseRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub cancel_reminder_enabled: bool,
+    #[diesel(column_name = deleted_at)]
+    pub _deleted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]

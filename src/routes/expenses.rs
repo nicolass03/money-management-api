@@ -117,6 +117,13 @@ pub async fn create_expense(
     state
         .cache
         .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
+    // A past-dated expense must be reflected in the frozen projection history aggregates.
+    crate::services::projection_history::refresh_history_for_date(
+        &state.db_pool,
+        user.sub,
+        &body.date,
+    )
+    .await?;
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -147,6 +154,12 @@ pub async fn patch_expense(
     state
         .cache
         .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
+    crate::services::projection_history::refresh_history_for_date(
+        &state.db_pool,
+        user.sub,
+        &row.date.format("%Y-%m-%d").to_string(),
+    )
+    .await?;
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -167,6 +180,12 @@ pub async fn delete_expense(
     state
         .cache
         .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
+    crate::services::projection_history::refresh_history_for_date(
+        &state.db_pool,
+        user.sub,
+        &existing.date.format("%Y-%m-%d").to_string(),
+    )
+    .await?;
     Ok(Json(serde_json::json!({ "success": true })))
 }
 

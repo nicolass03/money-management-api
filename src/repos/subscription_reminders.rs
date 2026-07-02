@@ -45,6 +45,7 @@ pub async fn list_active(
         .inner_join(recurring_expenses::table)
         .filter(subscription_reminders::user_id.eq(user_id))
         .filter(subscription_reminders::dismissed_at.is_null())
+        .filter(recurring_expenses::deleted_at.is_null())
         .filter(subscription_reminders::charge_date.ge(today))
         .order(subscription_reminders::charge_date.asc())
         .select((

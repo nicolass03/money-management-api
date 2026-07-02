@@ -1,26 +1,11 @@
-mod app;
-mod auth;
-mod cache;
-mod config;
-mod jobs;
-mod dto;
-mod error;
-mod models;
-mod rate_limit;
-mod repos;
-mod routes;
-mod schema;
-mod services;
-mod state;
-mod validation;
-
 use std::net::SocketAddr;
 
 use tracing_subscriber::EnvFilter;
 
-use crate::app::build_app;
-use crate::config::Config;
-use crate::state::AppState;
+use money_management_api::app::build_app;
+use money_management_api::config::Config;
+use money_management_api::jobs;
+use money_management_api::state::AppState;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

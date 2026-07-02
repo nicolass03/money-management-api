@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::error::ApiError;
 use crate::models::{CurrencyCode, PayFrequency, RecurringExpenseRow};
 use crate::repos::{connection, settings, tags};
-use crate::schema::{expenses, recurring_expenses};
+use crate::schema::recurring_expenses;
 use crate::state::DbPool;
 
 pub async fn list_all(
@@ -23,6 +23,7 @@ pub async fn list_all_with_conn(
 ) -> Result<Vec<RecurringExpenseRow>, ApiError> {
     recurring_expenses::table
         .filter(recurring_expenses::user_id.eq(user_id))
+        .filter(recurring_expenses::deleted_at.is_null())
         .order(recurring_expenses::name.asc())
         .select(RecurringExpenseRow::as_select())
         .load(conn)
@@ -63,6 +64,7 @@ pub async fn find_by_id(
     recurring_expenses::table
         .filter(recurring_expenses::user_id.eq(user_id))
         .filter(recurring_expenses::id.eq(id))
+        .filter(recurring_expenses::deleted_at.is_null())
         .select(RecurringExpenseRow::as_select())
         .first(&mut conn)
         .await
@@ -144,7 +146,8 @@ pub async fn update(
             let recurring = diesel::update(
                 recurring_expenses::table
                     .filter(recurring_expenses::user_id.eq(user_id))
-                    .filter(recurring_expenses::id.eq(id)),
+                    .filter(recurring_expenses::id.eq(id))
+                    .filter(recurring_expenses::deleted_at.is_null()),
             )
             .set((
                 recurring_expenses::name.eq(name),
@@ -188,7 +191,8 @@ pub async fn set_cancel_reminder(
             let recurring = diesel::update(
                 recurring_expenses::table
                     .filter(recurring_expenses::user_id.eq(user_id))
-                    .filter(recurring_expenses::id.eq(id)),
+                    .filter(recurring_expenses::id.eq(id))
+                    .filter(recurring_expenses::deleted_at.is_null()),
             )
             .set((
                 recurring_expenses::cancel_reminder_enabled.eq(enabled),
@@ -208,25 +212,29 @@ pub async fn set_cancel_reminder(
     .map_err(ApiError::from)
 }
 
+/// Soft-deletes a recurring expense. Materialized charges are kept; cron, upcoming-payable, and
+/// projections skip deleted rows (same effect as ending the schedule).
 pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
+    let now = Utc::now();
     conn.transaction(|conn| {
         Box::pin(async move {
-            diesel::delete(
-                expenses::table
-                    .filter(expenses::user_id.eq(user_id))
-                    .filter(expenses::recurring_id.eq(id)),
-            )
-            .execute(conn)
-            .await?;
-            diesel::delete(
+            let updated = diesel::update(
                 recurring_expenses::table
                     .filter(recurring_expenses::user_id.eq(user_id))
-                    .filter(recurring_expenses::id.eq(id)),
+                    .filter(recurring_expenses::id.eq(id))
+                    .filter(recurring_expenses::deleted_at.is_null()),
             )
+            .set((
+                recurring_expenses::deleted_at.eq(now),
+                recurring_expenses::cancel_reminder_enabled.eq(false),
+                recurring_expenses::updated_at.eq(now),
+            ))
             .execute(conn)
             .await?;
-            settings::bump_cache_revision(conn, user_id).await?;
+            if updated > 0 {
+                settings::bump_cache_revision(conn, user_id).await?;
+            }
             Ok::<(), diesel::result::Error>(())
         })
     })

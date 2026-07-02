@@ -71,6 +71,12 @@ Scheduled income is **materialized by the daily cron**, not pre-synced. `jobs/da
 - **Repo reads:** `income::list_all*` returns **active** rows only (`deleted_at IS NULL`) for `GET /income`; `list_with_deleted_with_conn` returns tombstones too and is used **only** by projections.
 - **Projections** (`services/projections.rs`): opening balance = `user_settings.projection_initial_free_money` (display currency) **plus** the sum of every active account's `initial_amount` converted to display currency (`cache/loader.rs`). `income_total` = active persisted rows in the period **plus** projected future occurrences (`date >= today`) from **every** pay schedule (not just primary) whose `(schedule_id, date)` is neither materialized nor tombstoned. The migration deletes pre-synced **future** `source='scheduled'` rows so the cron/projection becomes the single source of truth; past materialized rows are kept. The `income` migration must be applied (`./scripts/migrate.sh`) before running the API, or `GET /income`/projections fail on the missing columns. Users backfilled by `20260630120000_add_accounts` got a Default account seeded from `projection_initial_free_money` — zero the setting (or lower the account initial) to avoid double-counting the same cash.
 
+## Recurring expense delete (soft)
+
+- **`DELETE /recurring-expenses/:id`** sets `recurring_expenses.deleted_at` (migration `20260702180000_recurring_expense_soft_delete`). **Materialized `expenses` rows are kept** — deleting a subscription cancels future charges, it does not refund/erase history.
+- Active reads (`list_all`, `find_by_id`, cron, upcoming-payable, projections) filter `deleted_at IS NULL`. Same practical effect as ending the schedule; use **`last_payment_date`** when you want to keep the row visible with an end date.
+- `expenses.recurring_id` FK is **`ON DELETE RESTRICT`** so a hard DB delete cannot cascade-wipe charges. **Do not** hard-delete recurring rows.
+
 ## Railway deployment
 
 The repo includes a multi-stage `Dockerfile` (cargo-chef + `libpq-dev` at build, `libpq5` at runtime) and `railway.toml` with `healthcheckPath = "/health"`.

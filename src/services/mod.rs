@@ -8,6 +8,7 @@ pub mod expense_period;
 pub mod fx_memory;
 pub mod materialization;
 pub mod pay_periods;
+pub mod projection_history;
 pub mod projections;
 pub mod reports;
 pub mod subscription_reminders;

@@ -5,18 +5,18 @@ use uuid::Uuid;
 use crate::dto::{MoneyContextResponse, ProjectionsResponse};
 use crate::error::ApiError;
 use crate::models::{
-    IncomePayScheduleResponse, UserSettingsRow,
+    IncomePayScheduleResponse, ProjectionHistoryRow, UserSettingsRow,
 };
 use crate::repos::{
     accounts, budgets, connection, expenses, income, income_schedules, planned_expenses,
-    recurring_expenses, settings, tags,
+    projection_history, recurring_expenses, settings, tags,
 };
 use crate::services::currency::convert_amount;
 use crate::services::exchange_rates::get_exchange_rates;
 use crate::services::expense_period::{
     build_expense_period_view, ExpensePeriodKey, ExpensePeriodViewResponse,
 };
-use crate::services::projections::build_projection_rows;
+use crate::services::projections::{build_projection_rows, ProjectionRow};
 use crate::services::upcoming_payable::{build_upcoming_payable_items, PayableFutureItem};
 use crate::state::DbPool;
 use crate::validation::resolve_reference_date;
@@ -257,20 +257,60 @@ impl UserDataLoader {
         let initial_free_money =
             user_settings.projection_initial_free_money + accounts_initial;
 
-        let rows = build_projection_rows(
-            &primary_schedule,
-            &schedules,
-            &income_all,
-            &expense_rows,
-            &recurring,
-            &planned,
-            &budget_rows,
-            user_settings.display_currency,
-            &rates,
-            initial_free_money,
-            projection_start_ref,
-            &reference_date,
-        );
+        // Past periods are served from the frozen history table; only the current + future periods
+        // are computed live, seeded from the balance carried by the frozen rows. On a fresh user
+        // with nothing frozen yet (or a display-currency mismatch pending re-init), fall back to a
+        // full live computation from the opening balance — the original behavior.
+        let history =
+            projection_history::list_for_schedule_with_conn(&mut conn, user_id, schedule_id).await?;
+        let history_usable = !history.is_empty()
+            && history
+                .iter()
+                .all(|row| row.currency == user_settings.display_currency);
+
+        let rows = if history_usable {
+            let mut rows: Vec<ProjectionRow> =
+                history.iter().map(history_row_to_projection).collect();
+            // The current period takes the last frozen entry as its base: seed the live run from
+            // that row's cumulative and start at the period right after it (which also self-heals
+            // any period the daily job hasn't frozen yet — it re-appears as a live past row).
+            let last = history.last().expect("history is non-empty when usable");
+            let seed = last.cumulative;
+            let range_start = (last.pay_date + chrono::Duration::days(1))
+                .format("%Y-%m-%d")
+                .to_string();
+            let live = build_projection_rows(
+                &primary_schedule,
+                &schedules,
+                &income_all,
+                &expense_rows,
+                &recurring,
+                &planned,
+                &budget_rows,
+                user_settings.display_currency,
+                &rates,
+                seed,
+                Some(&range_start),
+                &reference_date,
+            );
+            rows.extend(live);
+            rows
+        } else {
+            build_projection_rows(
+                &primary_schedule,
+                &schedules,
+                &income_all,
+                &expense_rows,
+                &recurring,
+                &planned,
+                &budget_rows,
+                user_settings.display_currency,
+                &rates,
+                initial_free_money,
+                projection_start_ref,
+                &reference_date,
+            )
+        };
 
         let response = Arc::new(ProjectionsResponse {
             rows,
@@ -284,6 +324,50 @@ impl UserDataLoader {
             .await;
 
         Ok(filter_projection_rows(response, include_past))
+    }
+
+    /// The single projection period closing on `pay_date`, computed fresh with its full expense
+    /// item breakdown. Frozen history rows store aggregates only, so the UI calls this on demand
+    /// when a past period is opened. Recomputed with the same kernel as `projections`, so the item
+    /// total matches the frozen `planned_spent` for that period.
+    pub async fn projection_period_items(
+        &self,
+        user_id: Uuid,
+        pay_date: &str,
+        as_of: Option<&str>,
+    ) -> Result<Arc<ProjectionRow>, ApiError> {
+        let reference_date = resolve_reference_date(as_of)?;
+        let Some(inputs) =
+            crate::services::projection_history::load_projection_inputs(&self.pool, user_id).await?
+        else {
+            return Err(ApiError::BadRequest(
+                "set a primary pay schedule in settings first".into(),
+            ));
+        };
+
+        let projection_start = inputs
+            .projection_start_date
+            .map(|date| date.format("%Y-%m-%d").to_string());
+        let rows = build_projection_rows(
+            &inputs.primary_schedule,
+            &inputs.schedules,
+            &inputs.income_all,
+            &inputs.expenses,
+            &inputs.recurring,
+            &inputs.planned,
+            &inputs.budgets,
+            inputs.display_currency,
+            &inputs.rates,
+            inputs.initial_free_money,
+            projection_start.as_deref(),
+            &reference_date,
+        );
+
+        let row = rows
+            .into_iter()
+            .find(|row| row.pay_date == pay_date)
+            .ok_or(ApiError::NotFound)?;
+        Ok(Arc::new(row))
     }
 
     pub async fn expense_period_view(
@@ -391,6 +475,22 @@ impl UserDataLoader {
             .await;
 
         Ok(items)
+    }
+}
+
+/// Maps a frozen history row to a projection row. Past periods carry aggregates only; the UI
+/// fetches the per-item breakdown for an opened past period via a separate query.
+fn history_row_to_projection(row: &ProjectionHistoryRow) -> ProjectionRow {
+    ProjectionRow {
+        pay_date: row.pay_date.format("%Y-%m-%d").to_string(),
+        start_date: row.start_date.format("%Y-%m-%d").to_string(),
+        end_date: row.end_date.format("%Y-%m-%d").to_string(),
+        income_total: row.income,
+        expense_total: row.planned_spent,
+        period_free: row.free,
+        cumulative_free: row.cumulative,
+        expense_items: Vec::new(),
+        is_past: true,
     }
 }
 

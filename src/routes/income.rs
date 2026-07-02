@@ -62,6 +62,13 @@ pub async fn create_income(
     state
         .cache
         .invalidate(InvalidationScope::IncomeChange, user.sub).await;
+    // A past-dated income entry must be reflected in the frozen projection history aggregates.
+    crate::services::projection_history::refresh_history_for_date(
+        &state.db_pool,
+        user.sub,
+        &body.date,
+    )
+    .await?;
     Ok(Json(row.into()))
 }
 
@@ -117,6 +124,15 @@ pub async fn update_income(
     state
         .cache
         .invalidate(InvalidationScope::IncomeChange, user.sub).await;
+    // The date may have moved (manual edit). Trigger on the earlier of the old/new date: a
+    // full reinit rebuilds every past period, so one past-dated trigger covers both.
+    let refresh_date = existing.date.min(row.date).format("%Y-%m-%d").to_string();
+    crate::services::projection_history::refresh_history_for_date(
+        &state.db_pool,
+        user.sub,
+        &refresh_date,
+    )
+    .await?;
     Ok(Json(row.into()))
 }
 
@@ -140,5 +156,11 @@ pub async fn delete_income(
     state
         .cache
         .invalidate(InvalidationScope::IncomeChange, user.sub).await;
+    crate::services::projection_history::refresh_history_for_date(
+        &state.db_pool,
+        user.sub,
+        &existing.date.format("%Y-%m-%d").to_string(),
+    )
+    .await?;
     Ok(Json(serde_json::json!({ "success": true })))
 }

@@ -86,6 +86,16 @@ pub async fn patch_settings(
         .cache
         .invalidate(InvalidationScope::SettingsChange, user.sub).await;
 
+    // A new primary schedule, a moved projection start, or a different display currency all change
+    // the period boundaries or denomination of the frozen history, so rebuild it. Revision was
+    // already bumped above, so the next projections read picks up the rebuilt rows.
+    if body.primary_schedule_id.is_some()
+        || projection_start_date.is_some()
+        || display_currency.is_some()
+    {
+        crate::services::projection_history::reinitialize_history(&state.db_pool, user.sub).await?;
+    }
+
     let response = settings_response(&state.db_pool, user.sub, row).await?;
     Ok(Json(response))
 }
