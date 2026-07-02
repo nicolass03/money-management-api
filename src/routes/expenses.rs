@@ -102,16 +102,6 @@ pub async fn create_expense(
     let (account_id, currency) =
         resolve_account(&state.db_pool, user.sub, body.account_id, submitted_currency).await?;
 
-    let period = get_current_pay_period(&state.db_pool, user.sub)
-        .await?
-        .ok_or_else(|| ApiError::BadRequest("set a primary pay schedule in settings first".into()))?;
-    let date_s = date.format("%Y-%m-%d").to_string();
-    if !is_date_in_period(&date_s, &period) {
-        return Err(ApiError::BadRequest(
-            "date must fall within the current pay period".into(),
-        ));
-    }
-
     let row = expenses_repo::create_manual(
         &state.db_pool,
         user.sub,
