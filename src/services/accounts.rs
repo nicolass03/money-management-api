@@ -94,6 +94,21 @@ pub fn pick_richest_account(
         .map(|(id, _)| id)
 }
 
+/// Last-resort fallback for a recurring charge: the highest-balance account in *any* currency.
+/// Used only when the user has no account in the display currency, so that a charge is never
+/// stranded off-book (`account_id = NULL`, invisible to every balance). The caller converts the
+/// amount into the chosen account's currency.
+pub fn pick_richest_any_currency(
+    accounts_list: &[AccountRow],
+    balances: &HashMap<Uuid, i32>,
+) -> Option<AccountRow> {
+    accounts_list
+        .iter()
+        .filter_map(|a| balances.get(&a.id).map(|b| (a, *b)))
+        .max_by_key(|(_, balance)| *balance)
+        .map(|(a, _)| a.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +157,28 @@ mod tests {
             pick_richest_account(&accounts, &balances, CurrencyCode::Usd),
             Some(usd.id)
         );
+    }
+
+    #[test]
+    fn any_currency_pick_is_used_when_no_display_currency_account_exists() {
+        // Display currency is USD but the user holds only EUR/COP accounts: rather than strand the
+        // charge off-book, the richest account in any currency is chosen.
+        let eur = account(CurrencyCode::Eur);
+        let cop = account(CurrencyCode::Cop);
+        let accounts = vec![eur.clone(), cop.clone()];
+        let balances = HashMap::from([(eur.id, 3_000), (cop.id, 50_000)]);
+
+        assert_eq!(pick_richest_account(&accounts, &balances, CurrencyCode::Usd), None);
+        assert_eq!(
+            pick_richest_any_currency(&accounts, &balances).map(|a| a.id),
+            Some(cop.id)
+        );
+    }
+
+    #[test]
+    fn any_currency_pick_is_none_without_accounts() {
+        let accounts: Vec<AccountRow> = vec![];
+        let balances = HashMap::new();
+        assert!(pick_richest_any_currency(&accounts, &balances).is_none());
     }
 }

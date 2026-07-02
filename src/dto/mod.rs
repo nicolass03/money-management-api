@@ -195,6 +195,10 @@ pub struct CreateRecurringExpenseRequest {
     pub tags: Vec<String>,
     pub is_subscription: bool,
     pub last_payment_date: Option<String>,
+    /// Optional pinned account. When set, currency follows the account and the charge draws from
+    /// it; when absent, the charge job picks an account by currency.
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,6 +212,8 @@ pub struct UpdateRecurringExpenseRequest {
     pub tags: Vec<String>,
     pub is_subscription: bool,
     pub last_payment_date: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]

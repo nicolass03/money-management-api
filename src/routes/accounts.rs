@@ -24,7 +24,9 @@ async fn list_with_balances(
     Ok(accounts
         .into_iter()
         .map(|account| {
-            let balance = balances.get(&account.id).copied().unwrap_or(account.initial_amount);
+            // compute_balances returns an entry for every account passed in; 0 is only a defensive
+            // default and never actually used.
+            let balance = balances.get(&account.id).copied().unwrap_or(0);
             account_to_response(account, balance)
         })
         .collect())
@@ -68,8 +70,9 @@ pub async fn update_account(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateAccountRequest>,
 ) -> Result<Json<AccountResponse>, ApiError> {
+    // Currency is immutable after creation (see repos::accounts::update); the request's currency
+    // field is ignored. Only name and initial amount are updated.
     let name = parse_optional_name(body.name.as_deref())?;
-    let currency = parse_currency(&body.currency)?;
     let initial_amount = require_initial_amount(body.initial_amount)?;
 
     accounts_repo::update(
@@ -77,7 +80,6 @@ pub async fn update_account(
         user.sub,
         id,
         name.as_deref(),
-        currency,
         initial_amount,
     )
     .await?
@@ -101,6 +103,13 @@ pub async fn delete_account(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Refuse to archive the user's last active account: with zero accounts, new expenses/income
+    // are saved with a NULL account and fall out of every balance (an off-book state).
+    if accounts_repo::count_active(&state.db_pool, user.sub).await? <= 1 {
+        return Err(ApiError::BadRequest(
+            "cannot archive your only account".into(),
+        ));
+    }
     let archived = accounts_repo::archive(&state.db_pool, user.sub, id).await?;
     if !archived {
         return Err(ApiError::NotFound);

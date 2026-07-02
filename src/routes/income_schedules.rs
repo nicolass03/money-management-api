@@ -8,7 +8,7 @@ use crate::dto::{CreateIncomeScheduleRequest, UpdateIncomeScheduleRequest};
 use crate::error::ApiError;
 use crate::models::IncomePayScheduleResponse;
 use crate::repos::income_schedules as schedules_repo;
-use crate::routes::helpers::resolve_account;
+use crate::routes::helpers::{resolve_account, resolve_account_for_update};
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, parse_pay_frequency, require_non_empty_name, require_positive_amount,
@@ -97,8 +97,17 @@ pub async fn update_schedule(
         body.amount,
         &body.currency,
     )?;
-    let (account_id, currency) =
-        resolve_account(&state.db_pool, user.sub, body.account_id, currency).await?;
+    let existing = schedules_repo::find_by_id(&state.db_pool, user.sub, id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let (account_id, currency) = resolve_account_for_update(
+        &state.db_pool,
+        user.sub,
+        body.account_id,
+        existing.account_id,
+        currency,
+    )
+    .await?;
     let schedule = schedules_repo::update(
         &state.db_pool,
         user.sub,

@@ -8,6 +8,7 @@ use crate::dto::{CreateRecurringExpenseRequest, UpdateRecurringExpenseRequest};
 use crate::error::ApiError;
 use crate::models::{recurring_to_response, RecurringExpenseResponse};
 use crate::repos::recurring_expenses as recurring_repo;
+use crate::routes::helpers::{resolve_account, resolve_account_for_update};
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, parse_pay_frequency, parse_tag_names, require_non_empty_name,
@@ -86,6 +87,10 @@ pub async fn create_recurring(
 ) -> Result<Json<RecurringExpenseResponse>, ApiError> {
     let (name, anchor_date, frequency, amount, currency, tags, is_subscription, last_payment_date) =
         validate_recurring(&body)?;
+    // When an account is pinned, currency follows it (currency-follows-account); otherwise the
+    // submitted currency stands and the charge job selects an account by currency at charge time.
+    let (account_id, currency) =
+        resolve_account(&state.db_pool, user.sub, body.account_id, currency).await?;
     let row = recurring_repo::create(
         &state.db_pool,
         user.sub,
@@ -97,6 +102,7 @@ pub async fn create_recurring(
         &tags,
         is_subscription,
         last_payment_date,
+        account_id,
     )
     .await?;
     state
@@ -131,9 +137,21 @@ pub async fn update_recurring(
         tags: body.tags,
         is_subscription: body.is_subscription,
         last_payment_date: body.last_payment_date,
+        account_id: body.account_id,
     };
     let (name, anchor_date, frequency, amount, currency, tags, is_subscription, last_payment_date) =
         validate_recurring(&req)?;
+    let existing = recurring_repo::find_by_id(&state.db_pool, user.sub, id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let (account_id, currency) = resolve_account_for_update(
+        &state.db_pool,
+        user.sub,
+        req.account_id,
+        existing.account_id,
+        currency,
+    )
+    .await?;
     let row = recurring_repo::update(
         &state.db_pool,
         user.sub,
@@ -146,6 +164,7 @@ pub async fn update_recurring(
         &tags,
         is_subscription,
         last_payment_date,
+        account_id,
     )
     .await?
     .ok_or(ApiError::NotFound)?;

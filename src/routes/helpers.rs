@@ -16,12 +16,27 @@ pub async fn resolve_account(
     account_id: Option<Uuid>,
     fallback_currency: CurrencyCode,
 ) -> Result<(Option<Uuid>, CurrencyCode), ApiError> {
+    resolve_account_for_update(pool, user_id, account_id, None, fallback_currency).await
+}
+
+/// Like [`resolve_account`], but permits keeping an account that is now archived as long as it is
+/// the one already attached to the row being updated (`current_account_id`). This lets a user edit
+/// a row whose account was archived without being forced to reassign it, while still forbidding a
+/// *new* assignment of an archived account.
+pub async fn resolve_account_for_update(
+    pool: &DbPool,
+    user_id: Uuid,
+    account_id: Option<Uuid>,
+    current_account_id: Option<Uuid>,
+    fallback_currency: CurrencyCode,
+) -> Result<(Option<Uuid>, CurrencyCode), ApiError> {
     match account_id {
         Some(id) => {
             let account = accounts::find_by_id(pool, user_id, id)
                 .await?
                 .ok_or_else(|| ApiError::BadRequest("account not found".into()))?;
-            if account.archived_at.is_some() {
+            let unchanged = current_account_id == Some(id);
+            if account.archived_at.is_some() && !unchanged {
                 return Err(ApiError::BadRequest("account is archived".into()));
             }
             Ok((Some(id), account.currency))

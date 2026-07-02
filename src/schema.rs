@@ -205,6 +205,7 @@ diesel::table! {
         id -> Uuid,
         cancel_reminder_enabled -> Bool,
         deleted_at -> Nullable<Timestamptz>,
+        account_id -> Nullable<Uuid>,
     }
 }
 
@@ -296,6 +297,7 @@ diesel::joinable!(projection_history -> income_pay_schedules (schedule_id));
 diesel::joinable!(projection_history -> users (user_id));
 diesel::joinable!(recurring_expense_tags -> recurring_expenses (recurring_expense_id));
 diesel::joinable!(recurring_expense_tags -> tags (tag_id));
+diesel::joinable!(recurring_expenses -> accounts (account_id));
 diesel::joinable!(recurring_expenses -> users (user_id));
 diesel::joinable!(savings -> users (user_id));
 diesel::joinable!(subscription_reminders -> recurring_expenses (recurring_expense_id));

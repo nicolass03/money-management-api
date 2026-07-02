@@ -240,10 +240,14 @@ impl UserDataLoader {
             .map(|d| d.format("%Y-%m-%d").to_string());
         let projection_start_ref = projection_start_date.as_deref();
 
-        // Opening balance = projection setting (display currency) + every account's initial amount
-        // converted into the display currency.
-        let account_list = accounts::list_active_with_conn(&mut conn, user_id).await?;
-        let accounts_initial: i32 = account_list
+        // Opening balance = sum of every account's initial amount, converted into the display
+        // currency. Accounts are the single source of starting money (they replaced the legacy
+        // `user_settings.projection_initial_free_money`, which is no longer added here — doing so
+        // double-counted the seed). Archived accounts are included: their historical expense/income
+        // rows are still counted in the projection, so their initial amount must stay in the seed to
+        // keep the running balance continuous when an account is archived.
+        let account_list = accounts::list_all_with_conn(&mut conn, user_id).await?;
+        let initial_free_money: i32 = account_list
             .iter()
             .map(|account| {
                 convert_amount(
@@ -254,8 +258,6 @@ impl UserDataLoader {
                 )
             })
             .sum();
-        let initial_free_money =
-            user_settings.projection_initial_free_money + accounts_initial;
 
         // Past periods are served from the frozen history table; only the current + future periods
         // are computed live, seeded from the balance carried by the frozen rows. On a fresh user

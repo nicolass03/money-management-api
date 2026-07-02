@@ -30,6 +30,35 @@ pub async fn list_active_with_conn(
         .map_err(ApiError::from)
 }
 
+/// Count of active (non-archived) accounts. Used to forbid archiving the user's last account,
+/// which would otherwise drop them into an off-book state where new rows get a NULL account.
+pub async fn count_active(pool: &DbPool, user_id: Uuid) -> Result<i64, ApiError> {
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    accounts::table
+        .filter(accounts::user_id.eq(user_id))
+        .filter(accounts::archived_at.is_null())
+        .count()
+        .get_result(&mut conn)
+        .await
+        .map_err(ApiError::from)
+}
+
+/// All accounts including archived ones, ordered by creation. Used by the projection seed: an
+/// archived account's historical expense/income rows are still counted in projections, so its
+/// initial amount must remain in the opening balance to keep the projection continuous.
+pub async fn list_all_with_conn(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+) -> Result<Vec<AccountRow>, ApiError> {
+    accounts::table
+        .filter(accounts::user_id.eq(user_id))
+        .order(accounts::created_at.asc())
+        .select(AccountRow::as_select())
+        .load(conn)
+        .await
+        .map_err(ApiError::from)
+}
+
 pub async fn find_by_id(
     pool: &DbPool,
     user_id: Uuid,
@@ -76,12 +105,15 @@ pub async fn create(
     .map_err(ApiError::from)
 }
 
+/// Updates the mutable fields of an account. Currency is intentionally NOT updatable: it is fixed
+/// at creation because existing expense/income rows are stored in the account's currency and are
+/// summed without conversion when deriving the balance — changing it would silently corrupt the
+/// balance. Only `name` and `initial_amount` can change.
 pub async fn update(
     pool: &DbPool,
     user_id: Uuid,
     id: Uuid,
     name: Option<&str>,
-    currency: CurrencyCode,
     initial_amount: i32,
 ) -> Result<Option<AccountRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
@@ -94,7 +126,6 @@ pub async fn update(
             )
             .set((
                 accounts::name.eq(name),
-                accounts::currency.eq(currency),
                 accounts::initial_amount.eq(initial_amount),
             ))
             .returning(AccountRow::as_returning())

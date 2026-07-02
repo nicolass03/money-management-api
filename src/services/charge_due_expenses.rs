@@ -8,7 +8,9 @@ use crate::repos::{
     accounts as accounts_repo, connection, expenses as expenses_repo, settings as settings_repo,
     tags as tags_repo,
 };
-use crate::services::accounts::{compute_balances, pick_funded_account, pick_richest_account};
+use crate::services::accounts::{
+    compute_balances, pick_funded_account, pick_richest_account, pick_richest_any_currency,
+};
 use crate::services::currency::convert_amount;
 use crate::services::exchange_rates::get_exchange_rates;
 use crate::services::pay_periods::{get_pay_dates_in_range, schedule_from_recurring};
@@ -63,23 +65,44 @@ pub async fn charge_due_expenses_for_date(
             continue;
         }
 
-        // Prefer a same-currency account with enough balance; charge it in the expense's own
-        // currency (no conversion). Otherwise draw from the display-currency account, converting
-        // the amount; if no account exists at all, fall back to the legacy converted insert.
-        let (amount, currency, account_id) =
+        // Account selection order:
+        //  1. An explicitly pinned, still-active account — charged in its (== the template's)
+        //     currency even if it can't cover the charge (allowed to go negative), honoring the
+        //     user's choice.
+        //  2. Otherwise pick by currency: a same-currency account that can cover the charge.
+        //  3. Else the richest display-currency account (converted, may go negative).
+        //  4. Else the richest account in ANY currency (converted) — so a charge is never stranded
+        //     off-book when the user has no display-currency account.
+        //  5. Only when the user has no active account at all does it stay unattributed (NULL).
+        let pinned = recurring
+            .account_id
+            .filter(|id| accounts.iter().any(|a| a.id == *id));
+        let (amount, currency, account_id) = if let Some(id) = pinned {
+            (recurring.amount, recurring.currency, Some(id))
+        } else {
             match pick_funded_account(&accounts, &balances, recurring.currency, recurring.amount) {
                 Some(account_id) => (recurring.amount, recurring.currency, Some(account_id)),
-                None => {
-                    let converted = if recurring.currency != display_currency {
-                        convert_amount(recurring.amount, recurring.currency, display_currency, &rates)
-                    } else {
-                        recurring.amount
-                    };
-                    let fallback =
-                        pick_richest_account(&accounts, &balances, display_currency);
-                    (converted, display_currency, fallback)
-                }
-            };
+                None => match pick_richest_account(&accounts, &balances, display_currency) {
+                    Some(id) => (
+                        convert_amount(recurring.amount, recurring.currency, display_currency, &rates),
+                        display_currency,
+                        Some(id),
+                    ),
+                    None => match pick_richest_any_currency(&accounts, &balances) {
+                        Some(account) => (
+                            convert_amount(recurring.amount, recurring.currency, account.currency, &rates),
+                            account.currency,
+                            Some(account.id),
+                        ),
+                        None => (
+                            convert_amount(recurring.amount, recurring.currency, display_currency, &rates),
+                            display_currency,
+                            None,
+                        ),
+                    },
+                },
+            }
+        };
 
         // Reflect the charge against the chosen account's running balance for later iterations.
         if let Some(id) = account_id {

@@ -96,6 +96,7 @@ pub async fn create(
     tag_names: &[String],
     is_subscription: bool,
     last_payment_date: Option<chrono::NaiveDate>,
+    account_id: Option<Uuid>,
 ) -> Result<RecurringExpenseRow, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -111,6 +112,7 @@ pub async fn create(
                     recurring_expenses::currency.eq(currency),
                     recurring_expenses::is_subscription.eq(is_subscription),
                     recurring_expenses::last_payment_date.eq(last_payment_date),
+                    recurring_expenses::account_id.eq(account_id),
                     recurring_expenses::created_at.eq(now),
                     recurring_expenses::updated_at.eq(now),
                 ))
@@ -138,6 +140,7 @@ pub async fn update(
     tag_names: &[String],
     is_subscription: bool,
     last_payment_date: Option<chrono::NaiveDate>,
+    account_id: Option<Uuid>,
 ) -> Result<Option<RecurringExpenseRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -157,6 +160,7 @@ pub async fn update(
                 recurring_expenses::currency.eq(currency),
                 recurring_expenses::is_subscription.eq(is_subscription),
                 recurring_expenses::last_payment_date.eq(last_payment_date),
+                recurring_expenses::account_id.eq(account_id),
                 recurring_expenses::updated_at.eq(now),
             ))
             .returning(RecurringExpenseRow::as_returning())

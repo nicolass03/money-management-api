@@ -8,7 +8,7 @@ use crate::dto::{CreateIncomeRequest, UpdateIncomeRequest};
 use crate::error::ApiError;
 use crate::models::{IncomeResponse, IncomeSource, is_manual_income};
 use crate::repos::income as income_repo;
-use crate::routes::helpers::resolve_account;
+use crate::routes::helpers::{resolve_account, resolve_account_for_update};
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, require_non_empty_name, require_positive_amount,
@@ -97,8 +97,14 @@ pub async fn update_income(
         // Manual income: full edit (name, amount, currency, date).
         let (name, amount, currency, date) =
             validate_income(&body.name, body.amount, &body.currency, &body.date)?;
-        let (account_id, currency) =
-            resolve_account(&state.db_pool, user.sub, body.account_id, currency).await?;
+        let (account_id, currency) = resolve_account_for_update(
+            &state.db_pool,
+            user.sub,
+            body.account_id,
+            existing.account_id,
+            currency,
+        )
+        .await?;
         income_repo::update(
             &state.db_pool,
             user.sub,

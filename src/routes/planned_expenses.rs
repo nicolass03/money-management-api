@@ -8,7 +8,7 @@ use crate::dto::{CreatePlannedExpenseRequest, UpdatePlannedExpenseRequest};
 use crate::error::ApiError;
 use crate::models::{planned_to_response, PlannedExpenseResponse};
 use crate::repos::planned_expenses as planned_repo;
-use crate::routes::helpers::resolve_account;
+use crate::routes::helpers::{resolve_account, resolve_account_for_update};
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, parse_tag_names, require_non_empty_name, require_positive_amount,
@@ -107,8 +107,17 @@ pub async fn update_planned(
         &body.tags,
         false,
     )?;
-    let (account_id, currency) =
-        resolve_account(&state.db_pool, user.sub, body.account_id, currency).await?;
+    let existing = planned_repo::find_by_id(&state.db_pool, user.sub, id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let (account_id, currency) = resolve_account_for_update(
+        &state.db_pool,
+        user.sub,
+        body.account_id,
+        existing.account_id,
+        currency,
+    )
+    .await?;
     let row = planned_repo::update(
         &state.db_pool,
         user.sub,

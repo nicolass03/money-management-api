@@ -64,7 +64,8 @@ impl InvalidationScope {
                 CacheResource::ExpensePeriodView,
                 CacheResource::UpcomingPayable,
             ],
-            // Projection opening balance uses account initial amounts + projection_initial_free_money.
+            // Account balances are computed live (not cached); only the projection opening balance,
+            // which is seeded from every account's initial amount, needs busting here.
             Self::AccountChange => &[CacheResource::Projections],
             Self::MoneyContextRefresh => &[CacheResource::MoneyContext],
         }

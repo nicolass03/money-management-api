@@ -184,6 +184,8 @@ pub struct RecurringExpenseRow {
     pub cancel_reminder_enabled: bool,
     #[diesel(column_name = deleted_at)]
     pub _deleted_at: Option<DateTime<Utc>>,
+    /// Optional pinned account the daily charge job draws from. `None` = pick by currency.
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -398,6 +400,7 @@ pub struct RecurringExpenseResponse {
     pub updated_at: DateTime<Utc>,
     pub tags: Vec<String>,
     pub cancel_reminder_enabled: bool,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -489,6 +492,7 @@ pub fn recurring_to_response(row: RecurringExpenseRow, tags: Vec<String>) -> Rec
         updated_at: row.updated_at,
         tags,
         cancel_reminder_enabled: row.cancel_reminder_enabled,
+        account_id: row.account_id,
     }
 }
 
