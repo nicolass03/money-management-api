@@ -20,34 +20,35 @@ pub async fn compute_balances(
     accounts_list: &[AccountRow],
     as_of: NaiveDate,
 ) -> Result<HashMap<Uuid, i32>, ApiError> {
-    let expense_rows: Vec<(Option<Uuid>, i32)> = expenses::table
+    // Aggregate the per-account sums in Postgres (GROUP BY) rather than loading every expense/income
+    // row into memory and folding here — the DB returns one row per account instead of one per
+    // transaction. `sum` over Int4 yields a nullable BigInt (`Option<i64>`).
+    let expense_sums: Vec<(Option<Uuid>, Option<i64>)> = expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::account_id.is_not_null())
         .filter(expenses::date.le(as_of))
-        .select((expenses::account_id, expenses::amount))
+        .group_by(expenses::account_id)
+        .select((expenses::account_id, diesel::dsl::sum(expenses::amount)))
         .load(conn)
         .await?;
 
-    let income_rows: Vec<(Option<Uuid>, i32)> = income::table
+    let income_sums: Vec<(Option<Uuid>, Option<i64>)> = income::table
         .filter(income::user_id.eq(user_id))
         .filter(income::account_id.is_not_null())
         .filter(income::deleted_at.is_null())
         .filter(income::date.le(as_of))
-        .select((income::account_id, income::amount))
+        .group_by(income::account_id)
+        .select((income::account_id, diesel::dsl::sum(income::amount)))
         .load(conn)
         .await?;
 
-    let fold = |rows: Vec<(Option<Uuid>, i32)>| -> HashMap<Uuid, i64> {
-        let mut map: HashMap<Uuid, i64> = HashMap::new();
-        for (id, amount) in rows {
-            if let Some(id) = id {
-                *map.entry(id).or_default() += amount as i64;
-            }
-        }
-        map
+    let to_map = |rows: Vec<(Option<Uuid>, Option<i64>)>| -> HashMap<Uuid, i64> {
+        rows.into_iter()
+            .filter_map(|(id, total)| id.map(|id| (id, total.unwrap_or(0))))
+            .collect()
     };
-    let expense_map = fold(expense_rows);
-    let income_map = fold(income_rows);
+    let expense_map = to_map(expense_sums);
+    let income_map = to_map(income_sums);
 
     Ok(accounts_list
         .iter()

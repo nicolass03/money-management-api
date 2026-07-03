@@ -7,8 +7,6 @@ pub const MAX_NAME_LEN: usize = 200;
 pub const MAX_TAG_LEN: usize = 50;
 pub const MAX_TAGS: usize = 20;
 pub const MAX_AMOUNT: i32 = 1_000_000_000;
-pub const MIN_PROJECTION_FREE_MONEY: i32 = 0;
-pub const MAX_PROJECTION_FREE_MONEY: i32 = 1_000_000_000;
 
 pub fn parse_date(value: &str) -> Result<NaiveDate, ApiError> {
     if !regex_like_date(value) {
@@ -107,13 +105,6 @@ pub fn parse_optional_name(name: Option<&str>) -> Result<Option<String>, ApiErro
         }
         _ => Ok(None),
     }
-}
-
-pub fn require_projection_free_money(amount: i32) -> Result<i32, ApiError> {
-    if !(MIN_PROJECTION_FREE_MONEY..=MAX_PROJECTION_FREE_MONEY).contains(&amount) {
-        return Err(ApiError::BadRequest("invalid projection initial free money".into()));
-    }
-    Ok(amount)
 }
 
 /// Validates an extra-spent limit. The limit is an optional positive amount (in display-currency

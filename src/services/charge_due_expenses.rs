@@ -45,10 +45,10 @@ pub async fn charge_due_expenses_for_date(
     // Balances are derived once and decremented in-memory as charges land so multiple same-day
     // charges see up-to-date balances.
     let accounts = accounts_repo::list_active(pool, user_id).await?;
-    let mut balances = {
-        let mut conn = connection::user_connection(pool, user_id).await?;
-        compute_balances(&mut conn, user_id, &accounts, due_date).await?
-    };
+    // One connection is checked out for the whole per-user charge (balance read + each insert + the
+    // final cache bump) instead of a fresh checkout (and RLS round-trip) per due expense.
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    let mut balances = compute_balances(&mut conn, user_id, &accounts, due_date).await?;
     let mut created = 0;
 
     for recurring in recurring_list {
@@ -111,25 +111,26 @@ pub async fn charge_due_expenses_for_date(
             }
         }
 
-        let mut conn = connection::user_connection(pool, user_id).await?;
         let insert_result = conn
             .transaction(|conn| {
                 Box::pin(async move {
                     let expense = expenses_repo::insert_expense(
                         conn,
-                        user_id,
-                        &recurring.name,
-                        amount,
-                        currency,
-                        due_date,
-                        None,
-                        Some(recurring.id),
-                        None,
-                        None,
-                        account_id,
-                        false,
-                        recurring.is_subscription,
-                        now,
+                        expenses_repo::NewExpense {
+                            user_id,
+                            name: &recurring.name,
+                            amount,
+                            currency,
+                            date: due_date,
+                            scheduled_date: None,
+                            recurring_id: Some(recurring.id),
+                            planned_expense_id: None,
+                            budget_id: None,
+                            account_id,
+                            amount_overridden: false,
+                            is_subscription: recurring.is_subscription,
+                            created_at: now,
+                        },
                     )
                     .await?;
                     tags_repo::copy_recurring_tags_to_expense(conn, recurring.id, expense.id)
@@ -152,7 +153,6 @@ pub async fn charge_due_expenses_for_date(
     }
 
     if created > 0 {
-        let mut conn = connection::user_connection(pool, user_id).await?;
         settings_repo::bump_cache_revision(&mut conn, user_id).await?;
     }
 

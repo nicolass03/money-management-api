@@ -253,19 +253,21 @@ pub async fn create_budget_expense(
 
                 let expense = expenses::insert_expense(
                     conn,
-                    user_id,
-                    name,
-                    amount,
-                    currency,
-                    date,
-                    None,
-                    None,
-                    None,
-                    Some(budget_id),
-                    None,
-                    false,
-                    false,
-                    now,
+                    expenses::NewExpense {
+                        user_id,
+                        name,
+                        amount,
+                        currency,
+                        date,
+                        scheduled_date: None,
+                        recurring_id: None,
+                        planned_expense_id: None,
+                        budget_id: Some(budget_id),
+                        account_id: None,
+                        amount_overridden: false,
+                        is_subscription: false,
+                        created_at: now,
+                    },
                 )
                 .await?;
                 tags::copy_budget_tags_to_expense(conn, budget_id, expense.id).await?;

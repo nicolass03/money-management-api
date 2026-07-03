@@ -11,7 +11,6 @@ pub struct PatchSettingsRequest {
     pub display_currency: Option<String>,
     pub language: Option<String>,
     pub primary_schedule_id: Option<Option<Uuid>>,
-    pub projection_initial_free_money: Option<i32>,
     pub projection_start_date: Option<Option<String>>,
     pub extra_spent_limit: Option<Option<i32>>,
     pub theme: Option<String>,

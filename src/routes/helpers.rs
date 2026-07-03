@@ -39,6 +39,15 @@ pub async fn resolve_account_for_update(
             if account.archived_at.is_some() && !unchanged {
                 return Err(ApiError::BadRequest("account is archived".into()));
             }
+            // Currency-follows-account is the invariant balances rely on (amounts are summed with no
+            // FX conversion). The amount must already be denominated in the account's currency, so
+            // reject a mismatched submitted currency rather than silently reinterpret the amount's
+            // magnitude in a different currency (which would corrupt the balance).
+            if fallback_currency != account.currency {
+                return Err(ApiError::BadRequest(
+                    "amount currency must match the selected account's currency".into(),
+                ));
+            }
             Ok((Some(id), account.currency))
         }
         None => Ok((None, fallback_currency)),

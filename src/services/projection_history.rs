@@ -85,10 +85,13 @@ pub async fn load_projection_inputs(
     let planned = planned_expenses::list_with_tags_with_conn(&mut conn, user_id).await?;
     let budgets = budgets::list_with_tags_and_spent_with_conn(&mut conn, user_id).await?;
 
-    // Opening balance = projection setting (display currency) + every account's initial amount
-    // converted into the display currency (mirrors the loader's projection seed).
-    let accounts_list = accounts::list_active_with_conn(&mut conn, user_id).await?;
-    let accounts_initial: i32 = accounts_list
+    // Opening balance = Σ every account's initial amount converted to the display currency. Must
+    // stay byte-for-byte identical to the loader's live-projection seed (cache/loader.rs), or the
+    // frozen past periods and the live current/future periods would disagree. In particular: sum
+    // ALL accounts (active + archived, so archiving stays continuous) and do NOT add the legacy
+    // `projection_initial_free_money` (adding it double-counted, since accounts already carry it).
+    let accounts_list = accounts::list_all_with_conn(&mut conn, user_id).await?;
+    let initial_free_money: i32 = accounts_list
         .iter()
         .map(|account| {
             convert_amount(
@@ -99,7 +102,6 @@ pub async fn load_projection_inputs(
             )
         })
         .sum();
-    let initial_free_money = settings.projection_initial_free_money + accounts_initial;
 
     Ok(Some(ProjectionInputs {
         primary_schedule,

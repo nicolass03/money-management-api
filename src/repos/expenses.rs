@@ -121,37 +121,44 @@ pub async fn find_with_tags(
     Ok(Some((row, tag_map.get(&id).cloned().unwrap_or_default())))
 }
 
+/// Column values for a new expense row. Grouping them into a named struct removes the transposition
+/// hazard of a 13-argument call — several `Option<Uuid>` and two `bool`s sit next to each other, and
+/// positionally swapping any two same-typed values would compile silently.
+pub struct NewExpense<'a> {
+    pub user_id: Uuid,
+    pub name: &'a str,
+    pub amount: i32,
+    pub currency: CurrencyCode,
+    pub date: NaiveDate,
+    pub scheduled_date: Option<NaiveDate>,
+    pub recurring_id: Option<Uuid>,
+    pub planned_expense_id: Option<Uuid>,
+    pub budget_id: Option<Uuid>,
+    pub account_id: Option<Uuid>,
+    pub amount_overridden: bool,
+    pub is_subscription: bool,
+    pub created_at: DateTime<Utc>,
+}
+
 pub async fn insert_expense(
     conn: &mut AsyncPgConnection,
-    user_id: Uuid,
-    name: &str,
-    amount: i32,
-    currency: CurrencyCode,
-    date: NaiveDate,
-    scheduled_date: Option<NaiveDate>,
-    recurring_id: Option<Uuid>,
-    planned_expense_id: Option<Uuid>,
-    budget_id: Option<Uuid>,
-    account_id: Option<Uuid>,
-    amount_overridden: bool,
-    is_subscription: bool,
-    created_at: DateTime<Utc>,
+    new: NewExpense<'_>,
 ) -> Result<ExpenseRow, diesel::result::Error> {
     diesel::insert_into(expenses::table)
         .values((
-            expenses::user_id.eq(user_id),
-            expenses::name.eq(name),
-            expenses::amount.eq(amount),
-            expenses::currency.eq(currency),
-            expenses::date.eq(date),
-            expenses::scheduled_date.eq(scheduled_date),
-            expenses::recurring_id.eq(recurring_id),
-            expenses::planned_expense_id.eq(planned_expense_id),
-            expenses::budget_id.eq(budget_id),
-            expenses::account_id.eq(account_id),
-            expenses::amount_overridden.eq(amount_overridden),
-            expenses::is_subscription.eq(is_subscription),
-            expenses::created_at.eq(created_at),
+            expenses::user_id.eq(new.user_id),
+            expenses::name.eq(new.name),
+            expenses::amount.eq(new.amount),
+            expenses::currency.eq(new.currency),
+            expenses::date.eq(new.date),
+            expenses::scheduled_date.eq(new.scheduled_date),
+            expenses::recurring_id.eq(new.recurring_id),
+            expenses::planned_expense_id.eq(new.planned_expense_id),
+            expenses::budget_id.eq(new.budget_id),
+            expenses::account_id.eq(new.account_id),
+            expenses::amount_overridden.eq(new.amount_overridden),
+            expenses::is_subscription.eq(new.is_subscription),
+            expenses::created_at.eq(new.created_at),
         ))
         .returning(ExpenseRow::as_returning())
         .get_result(conn)
@@ -175,19 +182,21 @@ pub async fn create_manual(
         Box::pin(async move {
             let expense = insert_expense(
                 conn,
-                user_id,
-                name,
-                amount,
-                currency,
-                date,
-                None,
-                None,
-                None,
-                None,
-                account_id,
-                false,
-                is_subscription,
-                now,
+                NewExpense {
+                    user_id,
+                    name,
+                    amount,
+                    currency,
+                    date,
+                    scheduled_date: None,
+                    recurring_id: None,
+                    planned_expense_id: None,
+                    budget_id: None,
+                    account_id,
+                    amount_overridden: false,
+                    is_subscription,
+                    created_at: now,
+                },
             )
             .await?;
             tags::set_expense_tags(conn, user_id, expense.id, tag_names).await?;
@@ -336,19 +345,21 @@ pub async fn create_early_paid(
         Box::pin(async move {
             let expense = insert_expense(
                 conn,
-                user_id,
-                name,
-                amount,
-                currency,
-                date,
-                Some(scheduled_date),
-                recurring_id,
-                planned_expense_id,
-                None,
-                account_id,
-                amount_overridden,
-                is_subscription,
-                now,
+                NewExpense {
+                    user_id,
+                    name,
+                    amount,
+                    currency,
+                    date,
+                    scheduled_date: Some(scheduled_date),
+                    recurring_id,
+                    planned_expense_id,
+                    budget_id: None,
+                    account_id,
+                    amount_overridden,
+                    is_subscription,
+                    created_at: now,
+                },
             )
             .await?;
             if let Some(recurring_id) = recurring_id {

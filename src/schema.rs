@@ -253,7 +253,6 @@ diesel::table! {
     user_settings (user_id) {
         display_currency -> CurrencyCode,
         updated_at -> Timestamptz,
-        projection_initial_free_money -> Int4,
         projection_start_date -> Nullable<Date>,
         user_id -> Uuid,
         primary_schedule_id -> Nullable<Uuid>,

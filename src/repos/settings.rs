@@ -34,7 +34,6 @@ pub async fn get_user_settings_with_conn(
             user_settings::user_id.eq(user_id),
             user_settings::display_currency.eq(CurrencyCode::Usd),
             user_settings::language.eq("en"),
-            user_settings::projection_initial_free_money.eq(0),
             user_settings::updated_at.eq(now),
         ))
         .on_conflict(user_settings::user_id)
@@ -56,7 +55,6 @@ pub async fn update_user_settings(
     display_currency: Option<CurrencyCode>,
     language: Option<String>,
     primary_schedule_id: Option<Option<Uuid>>,
-    projection_initial_free_money: Option<i32>,
     projection_start_date: Option<Option<chrono::NaiveDate>>,
     extra_spent_limit: Option<Option<i32>>,
     theme: Option<String>,
@@ -82,12 +80,6 @@ pub async fn update_user_settings(
             if let Some(schedule_id) = primary_schedule_id {
                 diesel::update(user_settings::table.find(user_id))
                     .set(user_settings::primary_schedule_id.eq(schedule_id))
-                    .execute(conn)
-                    .await?;
-            }
-            if let Some(amount) = projection_initial_free_money {
-                diesel::update(user_settings::table.find(user_id))
-                    .set(user_settings::projection_initial_free_money.eq(amount))
                     .execute(conn)
                     .await?;
             }
@@ -139,7 +131,6 @@ pub async fn bump_cache_revision(
             user_settings::user_id.eq(user_id),
             user_settings::display_currency.eq(CurrencyCode::Usd),
             user_settings::language.eq("en"),
-            user_settings::projection_initial_free_money.eq(0),
             user_settings::updated_at.eq(now),
             user_settings::cache_revision.eq(1_i64),
         ))

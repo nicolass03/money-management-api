@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::Local;
 use diesel::sql_query;
 use diesel::sql_types::BigInt;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
 use crate::cache::{InvalidationScope, UserDataCache};
 use crate::config::Config;
@@ -31,28 +31,51 @@ pub async fn run_daily_expenses(
     let user_ids = users::list_user_ids(pool).await?;
     let mut created = 0;
     for user_id in user_ids {
-        let expenses_created = charge_due_expenses_for_date(pool, user_id, &date).await?;
-        if expenses_created > 0 {
-            if let Some(cache) = cache {
-                cache.invalidate(InvalidationScope::ExpenseChange, user_id).await;
+        // Every per-user step is isolated: one user's failure (transient DB error, bad row) must
+        // not abort the whole batch and skip everyone else. Each step self-heals on the next run.
+        let expenses_created = match charge_due_expenses_for_date(pool, user_id, &date).await {
+            Ok(count) => {
+                if count > 0 {
+                    if let Some(cache) = cache {
+                        cache.invalidate(InvalidationScope::ExpenseChange, user_id).await;
+                    }
+                }
+                count
             }
-        }
+            Err(error) => {
+                tracing::error!(%user_id, %error, "charge due expenses failed");
+                0
+            }
+        };
 
-        let income_created = charge_due_income_for_date(pool, user_id, &date).await?;
-        if income_created > 0 {
-            if let Some(cache) = cache {
-                cache.invalidate(InvalidationScope::IncomeChange, user_id).await;
+        let income_created = match charge_due_income_for_date(pool, user_id, &date).await {
+            Ok(count) => {
+                if count > 0 {
+                    if let Some(cache) = cache {
+                        cache.invalidate(InvalidationScope::IncomeChange, user_id).await;
+                    }
+                }
+                count
             }
-        }
+            Err(error) => {
+                tracing::error!(%user_id, %error, "charge due income failed");
+                0
+            }
+        };
 
         // Cancellation-reminder rows drive the web banners; iOS schedules its own local
         // notifications. They are not server-cached, so no invalidation is needed here.
         let reminders_created =
-            generate_subscription_reminders_for_date(pool, user_id, &date).await?;
+            match generate_subscription_reminders_for_date(pool, user_id, &date).await {
+                Ok(count) => count,
+                Err(error) => {
+                    tracing::error!(%user_id, %error, "subscription reminders failed");
+                    0
+                }
+            };
 
         // Freeze any period that has now closed. Runs after materialization so a period closing
-        // today already has its due income/expenses materialized before it is frozen. A failure
-        // here must not abort the whole batch — it self-heals on the next run (idempotent upsert).
+        // today already has its due income/expenses materialized before it is frozen.
         let history_created = match ensure_history(pool, user_id).await {
             Ok(report) => report.inserted as i32,
             Err(error) => {
@@ -72,25 +95,37 @@ struct AdvisoryLockRow {
     acquired: bool,
 }
 
-async fn try_acquire_lock(pool: &DbPool) -> Result<bool, ApiError> {
+/// A pooled connection whose session holds the daily-job advisory lock.
+type LockConn<'a> = diesel_async::pooled_connection::bb8::PooledConnection<'a, AsyncPgConnection>;
+
+/// Tries to take the advisory lock and, on success, returns the connection that holds it.
+///
+/// `pg_try_advisory_lock` is a **session** lock: it is owned by the connection (session) that took
+/// it and can only be released by that same session. We therefore keep the connection alive for the
+/// whole job and release on it directly — returning it to the pool between acquire and release
+/// would let `pg_advisory_unlock` run on a different pooled session, silently fail, and leak the
+/// lock (blocking every subsequent run until that connection's session ends).
+async fn acquire_lock(pool: &DbPool) -> Result<Option<LockConn<'_>>, ApiError> {
     let mut conn = connection::neutral_connection(pool).await?;
     let row: AdvisoryLockRow = sql_query("SELECT pg_try_advisory_lock($1) AS acquired")
         .bind::<BigInt, _>(DAILY_EXPENSES_LOCK_KEY)
         .get_result(&mut conn)
         .await
         .map_err(ApiError::from)?;
-    Ok(row.acquired)
+    Ok(row.acquired.then_some(conn))
 }
 
-async fn release_lock(pool: &DbPool) {
-    if let Ok(mut conn) = connection::neutral_connection(pool).await {
-        let _: Result<AdvisoryLockRow, _> = sql_query("SELECT pg_advisory_unlock($1) AS acquired")
-            .bind::<BigInt, _>(DAILY_EXPENSES_LOCK_KEY)
-            .get_result(&mut conn)
-            .await;
-    }
+async fn release_lock(conn: &mut LockConn<'_>) {
+    let _: Result<AdvisoryLockRow, _> = sql_query("SELECT pg_advisory_unlock($1) AS acquired")
+        .bind::<BigInt, _>(DAILY_EXPENSES_LOCK_KEY)
+        .get_result(conn)
+        .await;
 }
 
+/// Time until the next `hour`:00. `hour` is interpreted in the **server's** local timezone
+/// (`Local`), which on Railway is UTC — so `daily_expenses_hour` is effectively a UTC hour. Kept
+/// simple deliberately: an approximate daily tick is fine, and the advisory lock guards against a
+/// DST-induced double fire.
 fn duration_until_next_run(hour: u8) -> Duration {
     let now = Local::now();
     let target_hour = hour.min(23);
@@ -118,8 +153,8 @@ pub fn spawn_scheduler(pool: DbPool, cache: Arc<UserDataCache>, config: &Config)
             tracing::debug!(?wait, hour, "daily expense scheduler sleeping");
             tokio::time::sleep(wait).await;
 
-            match try_acquire_lock(&pool).await {
-                Ok(true) => {
+            match acquire_lock(&pool).await {
+                Ok(Some(mut lock_conn)) => {
                     tracing::info!("daily expense scheduler acquired lock");
                     match run_daily_expenses(&pool, Some(cache.as_ref())).await {
                         Ok((date, created)) => {
@@ -129,9 +164,11 @@ pub fn spawn_scheduler(pool: DbPool, cache: Arc<UserDataCache>, config: &Config)
                             tracing::error!(%error, "daily expense job failed");
                         }
                     }
-                    release_lock(&pool).await;
+                    // Released on the same session that acquired it; the connection then returns to
+                    // the pool with the lock cleared.
+                    release_lock(&mut lock_conn).await;
                 }
-                Ok(false) => {
+                Ok(None) => {
                     tracing::debug!("daily expense scheduler skipped; another instance holds lock");
                 }
                 Err(error) => {

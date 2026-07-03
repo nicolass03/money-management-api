@@ -67,7 +67,6 @@ pub struct UserSettingsRow {
     pub display_currency: CurrencyCode,
     pub language: String,
     pub primary_schedule_id: Option<Uuid>,
-    pub projection_initial_free_money: i32,
     pub projection_start_date: Option<NaiveDate>,
     pub updated_at: DateTime<Utc>,
     pub cache_revision: i64,
@@ -252,7 +251,6 @@ pub struct UserSettingsResponse {
     pub primary_schedule_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_schedule: Option<IncomePayScheduleResponse>,
-    pub projection_initial_free_money: i32,
     pub projection_start_date: Option<NaiveDate>,
     pub extra_spent_limit: Option<i32>,
     pub theme: String,
@@ -271,7 +269,6 @@ impl UserSettingsResponse {
             language: row.language,
             primary_schedule_id: row.primary_schedule_id,
             primary_schedule: primary_schedule.map(IncomePayScheduleResponse::from),
-            projection_initial_free_money: row.projection_initial_free_money,
             projection_start_date: row.projection_start_date,
             extra_spent_limit: row.extra_spent_limit,
             theme: row.theme,

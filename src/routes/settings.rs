@@ -10,7 +10,7 @@ use crate::repos::{income_schedules, settings as settings_repo};
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, parse_language, parse_theme, regex_like_date,
-    require_extra_spent_limit, require_projection_free_money,
+    require_extra_spent_limit,
 };
 
 pub async fn get_settings(
@@ -58,11 +58,6 @@ pub async fn patch_settings(
             .ok_or(ApiError::NotFound)?;
     }
 
-    let projection_initial_free_money = match body.projection_initial_free_money {
-        Some(value) => Some(require_projection_free_money(value)?),
-        None => None,
-    };
-
     let extra_spent_limit = match body.extra_spent_limit {
         Some(Some(value)) => Some(Some(require_extra_spent_limit(value)?)),
         Some(None) => Some(None),
@@ -75,7 +70,6 @@ pub async fn patch_settings(
         display_currency,
         language,
         body.primary_schedule_id,
-        projection_initial_free_money,
         projection_start_date,
         extra_spent_limit,
         theme,
