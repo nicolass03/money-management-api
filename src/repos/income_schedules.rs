@@ -4,8 +4,8 @@ use diesel_async::{AsyncConnection, RunQueryDsl};
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::models::{CurrencyCode, IncomePayScheduleRow, IncomeSource, PayFrequency};
-use crate::schema::{income, income_pay_schedules};
+use crate::models::{CurrencyCode, IncomePayScheduleRow, PayFrequency};
+use crate::schema::income_pay_schedules;
 use crate::repos::{connection, settings};
 use crate::state::DbPool;
 
@@ -16,6 +16,7 @@ pub async fn list_all(
     let mut conn = connection::user_connection(pool, user_id).await?;
     income_pay_schedules::table
         .filter(income_pay_schedules::user_id.eq(user_id))
+        .filter(income_pay_schedules::deleted_at.is_null())
         .order(income_pay_schedules::name.asc())
         .select(IncomePayScheduleRow::as_select())
         .load(&mut conn)
@@ -40,6 +41,7 @@ pub async fn find_by_id_with_conn(
     income_pay_schedules::table
         .filter(income_pay_schedules::user_id.eq(user_id))
         .filter(income_pay_schedules::id.eq(id))
+        .filter(income_pay_schedules::deleted_at.is_null())
         .select(IncomePayScheduleRow::as_select())
         .first(conn)
         .await
@@ -104,7 +106,8 @@ pub async fn update(
             let schedule = diesel::update(
                 income_pay_schedules::table
                     .filter(income_pay_schedules::user_id.eq(user_id))
-                    .filter(income_pay_schedules::id.eq(id)),
+                    .filter(income_pay_schedules::id.eq(id))
+                    .filter(income_pay_schedules::deleted_at.is_null()),
             )
             .set((
                 income_pay_schedules::name.eq(name),
@@ -131,39 +134,30 @@ pub async fn update(
     .map_err(ApiError::from)
 }
 
+/// Soft-deletes a pay schedule. Materialized income is kept (including tombstones, so a deleted
+/// occurrence stays deleted); cron and projections skip deleted schedules, so only future pay
+/// dates stop. Mirrors recurring-expense soft delete. Also clears it as the primary schedule.
 pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
+    let now = Utc::now();
     conn.transaction(|conn| {
         Box::pin(async move {
-            // Remove materialized scheduled income (including soft-deleted tombstones)
-            // for this schedule, mirroring recurring-expense delete cascading.
-            diesel::delete(
-                income::table.filter(
-                    income::user_id
-                        .eq(user_id)
-                        .and(income::schedule_id.eq(id))
-                        .and(income::source.eq(IncomeSource::Scheduled)),
-                ),
-            )
-            .execute(conn)
-            .await?;
-            diesel::update(
-                income::table
-                    .filter(income::user_id.eq(user_id))
-                    .filter(income::schedule_id.eq(id)),
-            )
-            .set(income::schedule_id.eq::<Option<Uuid>>(None))
-            .execute(conn)
-            .await?;
-            settings::clear_primary_schedule(conn, user_id, id).await?;
-            diesel::delete(
+            let updated = diesel::update(
                 income_pay_schedules::table
                     .filter(income_pay_schedules::user_id.eq(user_id))
-                    .filter(income_pay_schedules::id.eq(id)),
+                    .filter(income_pay_schedules::id.eq(id))
+                    .filter(income_pay_schedules::deleted_at.is_null()),
             )
+            .set((
+                income_pay_schedules::deleted_at.eq(now),
+                income_pay_schedules::updated_at.eq(now),
+            ))
             .execute(conn)
             .await?;
-            settings::bump_cache_revision(conn, user_id).await?;
+            if updated > 0 {
+                settings::clear_primary_schedule(conn, user_id, id).await?;
+                settings::bump_cache_revision(conn, user_id).await?;
+            }
             Ok::<(), diesel::result::Error>(())
         })
     })

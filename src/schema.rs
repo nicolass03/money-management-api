@@ -132,6 +132,7 @@ diesel::table! {
         user_id -> Uuid,
         id -> Uuid,
         account_id -> Nullable<Uuid>,
+        deleted_at -> Nullable<Timestamptz>,
     }
 }
 

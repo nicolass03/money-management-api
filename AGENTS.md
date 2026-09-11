@@ -77,6 +77,11 @@ Scheduled income is **materialized by the daily cron**, not pre-synced. `jobs/da
 - Active reads (`list_all`, `find_by_id`, cron, upcoming-payable, projections) filter `deleted_at IS NULL`. Same practical effect as ending the schedule; use **`last_payment_date`** when you want to keep the row visible with an end date.
 - `expenses.recurring_id` FK is **`ON DELETE RESTRICT`** so a hard DB delete cannot cascade-wipe charges. **Do not** hard-delete recurring rows.
 
+## Income pay schedule delete (soft)
+
+- **`DELETE /income-schedules/:id`** sets `income_pay_schedules.deleted_at` (migration `20260911120000_income_schedule_soft_delete`) and clears it as the primary schedule. **Materialized `income` rows (and tombstones) are kept**: deleting a schedule stops future pay dates, it does not erase received income.
+- All reads in `repos/income_schedules.rs` (`list_all`, `find_by_id*`, `update`) filter `deleted_at IS NULL`, so the cron, projections, settings and reports treat a deleted schedule as gone. **Do not** hard-delete schedules. `income.schedule_id` has a NO ACTION FK, so a hard delete fails while income references the schedule.
+
 ## Railway deployment
 
 The repo includes a multi-stage `Dockerfile` (cargo-chef + `libpq-dev` at build, `libpq5` at runtime) and `railway.toml` with `healthcheckPath = "/health"`.
