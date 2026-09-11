@@ -32,6 +32,18 @@ async fn list_with_balances(
         .collect())
 }
 
+/// Invalidates cached projections and rebuilds the frozen projection history: the projection seed is
+/// the sum of account starting balances, so any account create/edit/archive changes every frozen
+/// cumulative value. Mirrors the settings patch path.
+async fn after_account_change(state: &AppState, user_id: Uuid) -> Result<(), ApiError> {
+    state
+        .cache
+        .invalidate(InvalidationScope::AccountChange, user_id)
+        .await;
+    crate::services::projection_history::reinitialize_history(&state.db_pool, user_id).await?;
+    Ok(())
+}
+
 pub async fn list_accounts(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
@@ -56,10 +68,7 @@ pub async fn create_account(
         initial_amount,
     )
     .await?;
-    state
-        .cache
-        .invalidate(InvalidationScope::AccountChange, user.sub)
-        .await;
+    after_account_change(&state, user.sub).await?;
     // A brand-new account has no activity yet, so balance == initial amount.
     Ok(Json(account_to_response(row, initial_amount)))
 }
@@ -84,10 +93,7 @@ pub async fn update_account(
     )
     .await?
     .ok_or(ApiError::NotFound)?;
-    state
-        .cache
-        .invalidate(InvalidationScope::AccountChange, user.sub)
-        .await;
+    after_account_change(&state, user.sub).await?;
 
     // Return the updated account with its freshly recomputed balance.
     let accounts = list_with_balances(&state, user.sub).await?;
@@ -114,9 +120,6 @@ pub async fn delete_account(
     if !archived {
         return Err(ApiError::NotFound);
     }
-    state
-        .cache
-        .invalidate(InvalidationScope::AccountChange, user.sub)
-        .await;
+    after_account_change(&state, user.sub).await?;
     Ok(Json(serde_json::json!({ "success": true })))
 }

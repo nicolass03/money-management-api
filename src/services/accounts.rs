@@ -7,40 +7,58 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::models::{AccountRow, CurrencyCode};
-use crate::schema::{expenses, income};
+use crate::schema::{expenses, income, user_settings};
 
 /// Derived current balance per account, in the account's own currency:
-/// `initial_amount + Σ(income assigned) − Σ(expenses assigned)`, counting only rows dated on or
-/// before `as_of`. No currency conversion is needed: every row written with an `account_id`
-/// carries that account's currency (the forms force currency-follows-account), and the recurring
-/// charge job stores its charge in the chosen account's currency.
+/// `initial_amount + Σ(income assigned) − Σ(expenses assigned)`, counting only rows dated within
+/// `[projection_start_date, as_of]`. `initial_amount` is therefore the account's balance on the
+/// user's projection start date — the same meaning the projection seed gives it — so moving the
+/// start date to today and entering current balances "starts over" without touching history.
+/// With no start date set, all history up to `as_of` counts. No currency conversion is needed:
+/// every row written with an `account_id` carries that account's currency (the forms force
+/// currency-follows-account), and the recurring charge job stores its charge in the chosen
+/// account's currency.
 pub async fn compute_balances(
     conn: &mut AsyncPgConnection,
     user_id: Uuid,
     accounts_list: &[AccountRow],
     as_of: NaiveDate,
 ) -> Result<HashMap<Uuid, i32>, ApiError> {
+    let start_date: Option<NaiveDate> = user_settings::table
+        .filter(user_settings::user_id.eq(user_id))
+        .select(user_settings::projection_start_date)
+        .first(conn)
+        .await
+        .optional()?
+        .flatten();
+
     // Aggregate the per-account sums in Postgres (GROUP BY) rather than loading every expense/income
     // row into memory and folding here — the DB returns one row per account instead of one per
     // transaction. `sum` over Int4 yields a nullable BigInt (`Option<i64>`).
-    let expense_sums: Vec<(Option<Uuid>, Option<i64>)> = expenses::table
+    let mut expense_query = expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::account_id.is_not_null())
         .filter(expenses::date.le(as_of))
         .group_by(expenses::account_id)
         .select((expenses::account_id, diesel::dsl::sum(expenses::amount)))
-        .load(conn)
-        .await?;
+        .into_boxed();
+    if let Some(start) = start_date {
+        expense_query = expense_query.filter(expenses::date.ge(start));
+    }
+    let expense_sums: Vec<(Option<Uuid>, Option<i64>)> = expense_query.load(conn).await?;
 
-    let income_sums: Vec<(Option<Uuid>, Option<i64>)> = income::table
+    let mut income_query = income::table
         .filter(income::user_id.eq(user_id))
         .filter(income::account_id.is_not_null())
         .filter(income::deleted_at.is_null())
         .filter(income::date.le(as_of))
         .group_by(income::account_id)
         .select((income::account_id, diesel::dsl::sum(income::amount)))
-        .load(conn)
-        .await?;
+        .into_boxed();
+    if let Some(start) = start_date {
+        income_query = income_query.filter(income::date.ge(start));
+    }
+    let income_sums: Vec<(Option<Uuid>, Option<i64>)> = income_query.load(conn).await?;
 
     let to_map = |rows: Vec<(Option<Uuid>, Option<i64>)>| -> HashMap<Uuid, i64> {
         rows.into_iter()

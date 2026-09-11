@@ -122,12 +122,6 @@ fn effective_period_start(period: &PayPeriod, projection_start_date: Option<&str
     period.start_date.clone()
 }
 
-fn is_opening_partial_period(period: &PayPeriod, projection_start_date: Option<&str>) -> bool {
-    projection_start_date.is_some_and(|start| {
-        start > period.start_date.as_str() && start <= period.end_date.as_str()
-    })
-}
-
 fn sum_income_in_period(
     entries: &[IncomeRow],
     period: &PayPeriod,
@@ -159,10 +153,10 @@ fn scheduled_income_keys(entries: &[IncomeRow]) -> HashSet<(Uuid, NaiveDate)> {
         .collect()
 }
 
-/// Projected scheduled income for a period: future pay-date occurrences (on or after
-/// `today`) from every pay schedule that have not yet been materialized or tombstoned.
-/// Past/current occurrences come from persisted rows via `sum_income_in_period`, mirroring
-/// how expenses treat past periods as actual and future periods as projected.
+/// Projected scheduled income for a period: future pay-date occurrences (on or after both
+/// `today` and `min_date`) from every pay schedule that have not yet been materialized or
+/// tombstoned. Past/current occurrences come from persisted rows via `sum_income_in_period`,
+/// mirroring how expenses treat past periods as actual and future periods as projected.
 fn projected_income_in_period(
     schedules: &[IncomePayScheduleRow],
     period: &PayPeriod,
@@ -170,12 +164,13 @@ fn projected_income_in_period(
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
     today: &str,
+    min_date: &str,
 ) -> i32 {
     let mut total = 0;
     for schedule in schedules {
         let input = schedule_from_income(schedule);
         for date_str in get_pay_dates_in_range(&input, &period.start_date, &period.end_date) {
-            if date_str.as_str() < today {
+            if date_str.as_str() < today || date_str.as_str() < min_date {
                 continue;
             }
             let Ok(date) = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") else {
@@ -245,35 +240,26 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
         .into_iter()
         .map(|period| {
             let is_past = period.pay_date.as_str() < input.today;
+            // For the opening period this is the projection start date (the seed is the balance
+            // on that day), so only income and expenses dated on or after it count.
             let period_start_date = effective_period_start(&period, input.projection_start_date);
-            let opening_partial = is_opening_partial_period(&period, input.projection_start_date);
-            let min_activity_date = if opening_partial {
-                input.projection_start_date.unwrap().to_string()
-            } else {
-                period_start_date.clone()
-            };
 
-            let income_total = if opening_partial {
-                0
-            } else {
-                let actual = sum_income_in_period(
-                    input.income_entries,
-                    &period,
-                    input.display_currency,
-                    input.rates,
-                    Some(&period.start_date),
-                    None,
-                );
-                let projected = projected_income_in_period(
-                    input.schedules,
-                    &period,
-                    &scheduled_keys,
-                    input.display_currency,
-                    input.rates,
-                    input.today,
-                );
-                actual + projected
-            };
+            let income_total = sum_income_in_period(
+                input.income_entries,
+                &period,
+                input.display_currency,
+                input.rates,
+                Some(&period_start_date),
+                None,
+            ) + projected_income_in_period(
+                input.schedules,
+                &period,
+                &scheduled_keys,
+                input.display_currency,
+                input.rates,
+                input.today,
+                &period_start_date,
+            );
 
             let expense_items = get_expense_items_in_period(
                 &expense_list,
@@ -291,17 +277,12 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
                 },
             )
             .into_iter()
-            .filter(|item| is_on_or_after_start_date(&item.date, Some(&min_activity_date)))
+            .filter(|item| is_on_or_after_start_date(&item.date, Some(&period_start_date)))
             .collect::<Vec<_>>();
 
             let expense_total: i32 = expense_items.iter().map(|item| item.converted_amount).sum();
             let period_free = income_total - expense_total;
             running_balance += period_free;
-            let cumulative_free = if opening_partial {
-                input.initial_free_money
-            } else {
-                running_balance
-            };
 
             ProjectionRow {
                 pay_date: period.pay_date,
@@ -310,7 +291,7 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
                 income_total,
                 expense_total,
                 period_free,
-                cumulative_free,
+                cumulative_free: running_balance,
                 expense_items,
                 is_past,
             }
