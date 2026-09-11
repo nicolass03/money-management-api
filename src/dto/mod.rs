@@ -219,7 +219,8 @@ pub struct UpdateRecurringExpenseRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CreatePlannedExpenseRequest {
     pub name: String,
-    pub date: String,
+    /// Omitted, null or empty = undated.
+    pub date: Option<String>,
     pub amount: i32,
     pub currency: String,
     pub tags: Vec<String>,
@@ -230,11 +231,18 @@ pub struct CreatePlannedExpenseRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdatePlannedExpenseRequest {
     pub name: String,
-    pub date: String,
+    /// Omitted, null or empty = undated.
+    pub date: Option<String>,
     pub amount: i32,
     pub currency: String,
     pub tags: Vec<String>,
     pub account_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PayPlannedExpenseRequest {
+    pub amount: i32,
 }
 
 #[derive(Debug, Deserialize)]

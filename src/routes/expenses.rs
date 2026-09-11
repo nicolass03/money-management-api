@@ -12,12 +12,8 @@ use crate::dto::{
 };
 use crate::error::ApiError;
 use crate::models::{expense_to_response, ExpenseResponse};
-use crate::repos::{
-    accounts as accounts_repo, connection, expenses as expenses_repo, planned_expenses,
-    recurring_expenses,
-};
-use crate::routes::helpers::{get_current_pay_period, resolve_account};
-use crate::services::accounts::{compute_balances, pick_funded_account, pick_richest_account};
+use crate::repos::{expenses as expenses_repo, planned_expenses, recurring_expenses};
+use crate::routes::helpers::{get_current_pay_period, pick_payment_account, resolve_account};
 use crate::services::pay_periods::{get_pay_dates_in_range, is_date_in_period, schedule_from_recurring};
 use crate::state::AppState;
 use crate::validation::{
@@ -225,13 +221,8 @@ pub async fn early_pay_expense(
 
     // Draw the early payment from a funded account in its currency (else the richest such
     // account, which may go negative; else leave unassigned). Keeps currency-follows-account.
-    let account_id = {
-        let accounts = accounts_repo::list_active(&state.db_pool, user.sub).await?;
-        let mut conn = connection::user_connection(&state.db_pool, user.sub).await?;
-        let balances = compute_balances(&mut conn, user.sub, &accounts, paid_date).await?;
-        pick_funded_account(&accounts, &balances, currency, amount)
-            .or_else(|| pick_richest_account(&accounts, &balances, currency))
-    };
+    let account_id =
+        pick_payment_account(&state.db_pool, user.sub, None, currency, amount, paid_date).await?;
 
     let row = if body.source_type == "recurring" {
         let recurring_id = body.recurring_id.ok_or_else(|| {
@@ -272,7 +263,7 @@ pub async fn early_pay_expense(
             amount,
             currency,
             paid_date,
-            scheduled_date,
+            Some(scheduled_date),
             Some(recurring_id),
             None,
             account_id,
@@ -287,8 +278,8 @@ pub async fn early_pay_expense(
         let planned = planned_expenses::find_by_id(&state.db_pool, user.sub, planned_id)
             .await?
             .ok_or_else(|| ApiError::BadRequest("planned expense not found".into()))?;
-        let planned_date_s = planned.date.format("%Y-%m-%d").to_string();
-        if planned_date_s != scheduled_date_s {
+        let planned_date_s = planned.date.map(|date| date.format("%Y-%m-%d").to_string());
+        if planned_date_s.as_deref() != Some(scheduled_date_s.as_str()) {
             return Err(ApiError::BadRequest(
                 "scheduled date does not match planned expense".into(),
             ));
@@ -309,7 +300,7 @@ pub async fn early_pay_expense(
             amount,
             currency,
             paid_date,
-            scheduled_date,
+            Some(scheduled_date),
             None,
             Some(planned_id),
             account_id,

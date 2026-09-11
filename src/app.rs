@@ -136,6 +136,10 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
                 .delete(routes::planned_expenses::delete_planned),
         )
         .route(
+            "/planned-expenses/{id}/pay",
+            post(routes::planned_expenses::pay_planned),
+        )
+        .route(
             "/budgets",
             get(routes::budgets::list_budgets).post(routes::budgets::create_budget),
         )

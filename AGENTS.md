@@ -82,6 +82,12 @@ Scheduled income is **materialized by the daily cron**, not pre-synced. `jobs/da
 - **`DELETE /income-schedules/:id`** sets `income_pay_schedules.deleted_at` (migration `20260911120000_income_schedule_soft_delete`) and clears it as the primary schedule. **Materialized `income` rows (and tombstones) are kept**: deleting a schedule stops future pay dates, it does not erase received income.
 - All reads in `repos/income_schedules.rs` (`list_all`, `find_by_id*`, `update`) filter `deleted_at IS NULL`, so the cron, projections, settings and reports treat a deleted schedule as gone. **Do not** hard-delete schedules. `income.schedule_id` has a NO ACTION FK, so a hard delete fails while income references the schedule.
 
+## One-time (planned) expenses
+
+- `planned_expenses.date` is **nullable** (migration `20260911130000_planned_expense_optional_date`). An undated item (for example a debt with no due date) never appears in projections, periods or upcoming-payable; it counts only once paid.
+- **Nothing auto-records planned expenses.** The daily job only charges recurring expenses. A dated item is projected until its date; after that it stays in the list (clients show it as "overdue") until the user pays it.
+- **`POST /planned-expenses/{id}/pay`** `{ amount }` records the full payment **today** (one payment per item; the amount may differ from the planned amount, which sets `amount_overridden`). It draws from the item's account while that account is active, otherwise a same-currency account (`routes/helpers.rs::pick_payment_account`, shared with early pay). The expense links back via `planned_expense_id`, and `GET /planned-expenses` returns `paid: true` for the item from then on.
+
 ## Railway deployment
 
 The repo includes a multi-stage `Dockerfile` (cargo-chef + `libpq-dev` at build, `libpq5` at runtime) and `railway.toml` with `healthcheckPath = "/health"`.

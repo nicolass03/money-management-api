@@ -301,6 +301,18 @@ pub async fn find_by_planned_id(
         .map_err(ApiError::from)
 }
 
+/// Ids of planned (one-time) expenses that already have a recorded payment.
+pub async fn list_paid_planned_ids(pool: &DbPool, user_id: Uuid) -> Result<HashSet<Uuid>, ApiError> {
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    let rows: Vec<Option<Uuid>> = expenses::table
+        .filter(expenses::user_id.eq(user_id))
+        .filter(expenses::planned_expense_id.is_not_null())
+        .select(expenses::planned_expense_id)
+        .load(&mut conn)
+        .await?;
+    Ok(rows.into_iter().flatten().collect())
+}
+
 pub async fn get_materialized_recurring_ids_for_due_date(
     pool: &DbPool,
     user_id: Uuid,
@@ -332,7 +344,7 @@ pub async fn create_early_paid(
     amount: i32,
     currency: CurrencyCode,
     date: NaiveDate,
-    scheduled_date: NaiveDate,
+    scheduled_date: Option<NaiveDate>,
     recurring_id: Option<Uuid>,
     planned_expense_id: Option<Uuid>,
     account_id: Option<Uuid>,
@@ -351,7 +363,7 @@ pub async fn create_early_paid(
                     amount,
                     currency,
                     date,
-                    scheduled_date: Some(scheduled_date),
+                    scheduled_date,
                     recurring_id,
                     planned_expense_id,
                     budget_id: None,

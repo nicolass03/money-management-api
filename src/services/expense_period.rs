@@ -489,7 +489,9 @@ pub(crate) fn get_expense_items_in_period(
     }
 
     for planned in planned_list {
-        let date = planned.row.date.format("%Y-%m-%d").to_string();
+        // Undated items stay out of periods/projections until paid.
+        let Some(date) = planned.row.date else { continue };
+        let date = date.format("%Y-%m-%d").to_string();
         if !is_date_in_period(&date, period) || date.as_str() <= today {
             continue;
         }

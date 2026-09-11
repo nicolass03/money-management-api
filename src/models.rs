@@ -194,7 +194,8 @@ pub struct PlannedExpenseRow {
     #[diesel(column_name = user_id)]
     pub _user_id: Uuid,
     pub name: String,
-    pub date: NaiveDate,
+    /// `None` = undated (e.g. a debt with no due date): kept out of projections until paid.
+    pub date: Option<NaiveDate>,
     pub amount: i32,
     pub currency: CurrencyCode,
     pub created_at: DateTime<Utc>,
@@ -405,13 +406,15 @@ pub struct RecurringExpenseResponse {
 pub struct PlannedExpenseResponse {
     pub id: Uuid,
     pub name: String,
-    pub date: NaiveDate,
+    pub date: Option<NaiveDate>,
     pub amount: i32,
     pub currency: CurrencyCode,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub tags: Vec<String>,
     pub account_id: Option<Uuid>,
+    /// Whether an expense has been recorded for this item (it can be paid only once).
+    pub paid: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -508,7 +511,11 @@ pub struct SubscriptionReminderResponse {
     pub currency: CurrencyCode,
 }
 
-pub fn planned_to_response(row: PlannedExpenseRow, tags: Vec<String>) -> PlannedExpenseResponse {
+pub fn planned_to_response(
+    row: PlannedExpenseRow,
+    tags: Vec<String>,
+    paid: bool,
+) -> PlannedExpenseResponse {
     PlannedExpenseResponse {
         id: row.id,
         name: row.name,
@@ -519,6 +526,7 @@ pub fn planned_to_response(row: PlannedExpenseRow, tags: Vec<String>) -> Planned
         updated_at: row.updated_at,
         tags,
         account_id: row.account_id,
+        paid,
     }
 }
 

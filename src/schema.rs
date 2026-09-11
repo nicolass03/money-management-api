@@ -149,7 +149,7 @@ diesel::table! {
 
     planned_expenses (id) {
         name -> Text,
-        date -> Date,
+        date -> Nullable<Date>,
         amount -> Int4,
         currency -> CurrencyCode,
         created_at -> Timestamptz,

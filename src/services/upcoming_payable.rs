@@ -90,7 +90,9 @@ pub fn build_upcoming_payable_items(
     }
 
     for (planned, tags) in planned_expenses {
-        let date = planned.date.format("%Y-%m-%d").to_string();
+        // Undated items have no due date to surface; they're paid from the one-time list.
+        let Some(date) = planned.date else { continue };
+        let date = date.format("%Y-%m-%d").to_string();
         if date.as_str() <= today || date.as_str() > window_end.as_str() {
             continue;
         }

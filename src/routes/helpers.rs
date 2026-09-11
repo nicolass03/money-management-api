@@ -1,8 +1,10 @@
+use chrono::NaiveDate;
 use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::models::CurrencyCode;
-use crate::repos::{accounts, income_schedules, settings};
+use crate::repos::{accounts, connection, income_schedules, settings};
+use crate::services::accounts::{compute_balances, pick_funded_account, pick_richest_account};
 use crate::services::pay_periods::{get_period_containing, schedule_from_income, PayPeriod};
 use crate::state::DbPool;
 
@@ -52,6 +54,28 @@ pub async fn resolve_account_for_update(
         }
         None => Ok((None, fallback_currency)),
     }
+}
+
+/// Account a one-off payment in `currency` draws from: `preferred` while it is still active; else
+/// a same-currency account that covers `amount`; else the richest same-currency account (may go
+/// negative); `None` when the user holds no active account in that currency. Keeps
+/// currency-follows-account, since every candidate is in the payment's currency.
+pub async fn pick_payment_account(
+    pool: &DbPool,
+    user_id: Uuid,
+    preferred: Option<Uuid>,
+    currency: CurrencyCode,
+    amount: i32,
+    as_of: NaiveDate,
+) -> Result<Option<Uuid>, ApiError> {
+    let accounts_list = accounts::list_active(pool, user_id).await?;
+    if let Some(id) = preferred.filter(|id| accounts_list.iter().any(|a| a.id == *id)) {
+        return Ok(Some(id));
+    }
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    let balances = compute_balances(&mut conn, user_id, &accounts_list, as_of).await?;
+    Ok(pick_funded_account(&accounts_list, &balances, currency, amount)
+        .or_else(|| pick_richest_account(&accounts_list, &balances, currency)))
 }
 
 pub async fn get_current_pay_period(
