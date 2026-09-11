@@ -346,10 +346,11 @@ mod tests {
         );
 
         // No income or expenses, so every period is flat and the opening balance is carried through.
-        for row in &rows {
+        // The opening (partial) period's "free" shows the starting balance itself.
+        for (index, row) in rows.iter().enumerate() {
             assert_eq!(row.income, 0);
             assert_eq!(row.planned_spent, 0);
-            assert_eq!(row.free, 0);
+            assert_eq!(row.free, if index == 0 { 5_000 } else { 0 });
             assert_eq!(row.cumulative, 5_000);
             assert_eq!(row.schedule_id, inputs.primary_schedule.id);
             assert_eq!(row.currency, CurrencyCode::Usd);
