@@ -16,7 +16,7 @@ use crate::services::expense_period::{
 };
 use crate::services::pay_periods::{
     get_pay_dates_in_range, get_projection_periods, is_date_in_period, schedule_from_income,
-    PayPeriod, PROJECTION_MONTHS_FORWARD,
+    PayPeriod,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,6 +97,7 @@ struct BuildProjectionInput<'a> {
     rates: &'a ExchangeRates,
     initial_free_money: i32,
     projection_start_date: Option<&'a str>,
+    projection_end_date: Option<&'a str>,
     today: &'a str,
 }
 
@@ -197,6 +198,7 @@ pub fn build_projection_rows(
     rates: &ExchangeRates,
     initial_free_money: i32,
     projection_start_date: Option<&str>,
+    projection_end_date: Option<&str>,
     today: &str,
 ) -> Vec<ProjectionRow> {
     let input = BuildProjectionInput {
@@ -211,6 +213,7 @@ pub fn build_projection_rows(
         rates,
         initial_free_money,
         projection_start_date,
+        projection_end_date,
         today,
     };
 
@@ -223,7 +226,7 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
         &schedule,
         Some(input.today),
         input.projection_start_date,
-        PROJECTION_MONTHS_FORWARD,
+        input.projection_end_date,
     );
 
     let expense_list = to_expense_with_tags(input.expenses);
@@ -367,6 +370,7 @@ mod tests {
             CurrencyCode::Usd,
             &empty_rates(),
             0,
+            None,
             None,
             "2026-06-01",
         )

@@ -2,7 +2,8 @@ use chrono::{Datelike, NaiveDate};
 
 use crate::models::{IncomePayScheduleRow, PayFrequency, RecurringExpenseRow};
 
-pub const PROJECTION_MONTHS_FORWARD: u32 = 12;
+pub const DEFAULT_PROJECTION_MONTHS_FORWARD: u32 = 12;
+const MAX_PROJECTION_PERIODS: usize = 5_000;
 
 #[derive(Debug, Clone)]
 pub struct PayPeriod {
@@ -232,14 +233,18 @@ pub fn get_projection_periods(
     schedule: &PayScheduleInput,
     reference_date: Option<&str>,
     projection_start_date: Option<&str>,
-    months_forward: u32,
+    projection_end_date: Option<&str>,
 ) -> Vec<PayPeriod> {
     let ref_date = reference_date.map(str::to_string).unwrap_or_else(|| {
         let today = chrono::Utc::now().date_naive();
         today.format("%Y-%m-%d").to_string()
     });
 
-    let horizon_end = add_months(&ref_date, i32::try_from(months_forward).unwrap());
+    let default_horizon_end = add_months(
+        &ref_date,
+        i32::try_from(DEFAULT_PROJECTION_MONTHS_FORWARD).unwrap(),
+    );
+    let horizon_end = projection_end_date.unwrap_or(&default_horizon_end);
     let range_start = projection_start_date.unwrap_or(&ref_date);
     let anchor_date = if let Some(start) = projection_start_date {
         if compare_iso(start, &ref_date) < 0 {
@@ -255,20 +260,24 @@ pub fn get_projection_periods(
     let mut period_map = std::collections::BTreeMap::new();
     let mut pay_date = anchor_period.pay_date;
 
-    while period_map.len() < 50 {
+    for _ in 0..MAX_PROJECTION_PERIODS {
         let period = get_period_for_pay_date(schedule, &pay_date);
-        if compare_iso(&period.start_date, &horizon_end) > 0 {
+        if compare_iso(&period.start_date, horizon_end) > 0 {
             break;
         }
 
         let overlaps_horizon = compare_iso(&period.end_date, range_start) >= 0
-            && compare_iso(&period.start_date, &horizon_end) <= 0;
+            && compare_iso(&period.start_date, horizon_end) <= 0;
 
         if overlaps_horizon {
             period_map.insert(period.pay_date.clone(), period);
         }
 
-        pay_date = get_next_pay_date(schedule, &add_days(&pay_date, 1));
+        let next_pay_date = get_next_pay_date(schedule, &add_days(&pay_date, 1));
+        if compare_iso(&next_pay_date, &pay_date) <= 0 {
+            break;
+        }
+        pay_date = next_pay_date;
     }
 
     period_map.into_values().collect()
@@ -361,5 +370,44 @@ mod tests {
         assert_eq!(periods[0].pay_date, "2026-03-25");
         assert_eq!(periods[2].pay_date, "2026-05-25");
         assert_eq!(periods[3].pay_date, "2026-06-25");
+    }
+
+    #[test]
+    fn projection_default_remains_twelve_months() {
+        let periods = get_projection_periods(&monthly_schedule(), Some("2026-06-01"), None, None);
+
+        assert_eq!(periods.first().unwrap().pay_date, "2026-06-25");
+        assert_eq!(periods.last().unwrap().pay_date, "2027-06-25");
+    }
+
+    #[test]
+    fn projection_end_includes_its_full_pay_period() {
+        let periods = get_projection_periods(
+            &monthly_schedule(),
+            Some("2026-06-01"),
+            None,
+            Some("2026-10-10"),
+        );
+
+        assert_eq!(periods.last().unwrap().start_date, "2026-09-26");
+        assert_eq!(periods.last().unwrap().end_date, "2026-10-25");
+    }
+
+    #[test]
+    fn two_year_weekly_projection_is_not_capped_at_fifty_periods() {
+        let schedule = PayScheduleInput {
+            anchor_date: "2026-09-12".to_string(),
+            frequency: PayFrequency::Weekly,
+            last_payment_date: None,
+        };
+        let periods = get_projection_periods(
+            &schedule,
+            Some("2026-09-12"),
+            None,
+            Some("2028-09-12"),
+        );
+
+        assert!(periods.len() > 100);
+        assert!(periods.last().unwrap().end_date.as_str() >= "2028-09-12");
     }
 }

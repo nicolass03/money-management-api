@@ -12,6 +12,9 @@ pub struct PatchSettingsRequest {
     pub language: Option<String>,
     pub primary_schedule_id: Option<Option<Uuid>>,
     pub projection_start_date: Option<Option<String>>,
+    pub projection_end_date: Option<Option<String>>,
+    /// Client local calendar date used to validate projection date bounds.
+    pub as_of: Option<String>,
     pub extra_spent_limit: Option<Option<i32>>,
     pub theme: Option<String>,
 }
@@ -289,4 +292,3 @@ pub struct ProjectionsResponse {
     pub display_currency: CurrencyCode,
     pub rates: ExchangeRates,
 }
-

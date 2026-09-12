@@ -40,6 +40,7 @@ pub struct ProjectionInputs {
     pub rates: ExchangeRates,
     pub initial_free_money: i32,
     pub projection_start_date: Option<NaiveDate>,
+    pub projection_end_date: Option<NaiveDate>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -115,6 +116,7 @@ pub async fn load_projection_inputs(
         rates,
         initial_free_money,
         projection_start_date: settings.projection_start_date,
+        projection_end_date: settings.projection_end_date,
     }))
 }
 
@@ -123,6 +125,9 @@ pub async fn load_projection_inputs(
 pub fn compute_history_rows(inputs: &ProjectionInputs, today: &str) -> Vec<NewProjectionHistory> {
     let projection_start = inputs
         .projection_start_date
+        .map(|date| date.format("%Y-%m-%d").to_string());
+    let projection_end = inputs
+        .projection_end_date
         .map(|date| date.format("%Y-%m-%d").to_string());
 
     let rows = build_projection_rows(
@@ -137,6 +142,7 @@ pub fn compute_history_rows(inputs: &ProjectionInputs, today: &str) -> Vec<NewPr
         &inputs.rates,
         inputs.initial_free_money,
         projection_start.as_deref(),
+        projection_end.as_deref(),
         today,
     );
 
@@ -320,6 +326,7 @@ mod tests {
             },
             initial_free_money: 5_000,
             projection_start_date: NaiveDate::from_ymd_opt(2026, 1, 1),
+            projection_end_date: None,
         }
     }
 

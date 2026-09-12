@@ -239,6 +239,10 @@ impl UserDataLoader {
             .projection_start_date
             .map(|d| d.format("%Y-%m-%d").to_string());
         let projection_start_ref = projection_start_date.as_deref();
+        let projection_end_date = user_settings
+            .projection_end_date
+            .map(|d| d.format("%Y-%m-%d").to_string());
+        let projection_end_ref = projection_end_date.as_deref();
 
         // Opening balance = sum of every account's initial amount, converted into the display
         // currency. Accounts are the single source of starting money (they replaced the legacy
@@ -293,6 +297,7 @@ impl UserDataLoader {
                 &rates,
                 seed,
                 Some(&range_start),
+                projection_end_ref,
                 &reference_date,
             );
             rows.extend(live);
@@ -310,6 +315,7 @@ impl UserDataLoader {
                 &rates,
                 initial_free_money,
                 projection_start_ref,
+                projection_end_ref,
                 &reference_date,
             )
         };
@@ -350,6 +356,9 @@ impl UserDataLoader {
         let projection_start = inputs
             .projection_start_date
             .map(|date| date.format("%Y-%m-%d").to_string());
+        let projection_end = inputs
+            .projection_end_date
+            .map(|date| date.format("%Y-%m-%d").to_string());
         let rows = build_projection_rows(
             &inputs.primary_schedule,
             &inputs.schedules,
@@ -362,6 +371,7 @@ impl UserDataLoader {
             &inputs.rates,
             inputs.initial_free_money,
             projection_start.as_deref(),
+            projection_end.as_deref(),
             &reference_date,
         );
 

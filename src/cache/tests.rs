@@ -14,6 +14,7 @@ fn settings_row(user_id: Uuid, revision: i64) -> UserSettingsRow {
         language: "en".to_string(),
         primary_schedule_id: None,
         projection_start_date: None,
+        projection_end_date: None,
         updated_at: chrono::Utc::now(),
         cache_revision: revision,
         extra_spent_limit: None,
@@ -30,6 +31,7 @@ fn invalidation_scope_maps_to_resources() {
     let settings = InvalidationScope::SettingsChange.resources();
     assert!(settings.contains(&CacheResource::Settings));
     assert!(settings.contains(&CacheResource::MoneyContext));
+    assert!(settings.contains(&CacheResource::Projections));
 }
 
 #[tokio::test]

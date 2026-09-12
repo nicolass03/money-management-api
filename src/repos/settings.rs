@@ -49,15 +49,20 @@ pub async fn get_user_settings_with_conn(
         .map_err(ApiError::from)
 }
 
+pub struct UserSettingsPatch {
+    pub display_currency: Option<CurrencyCode>,
+    pub language: Option<String>,
+    pub primary_schedule_id: Option<Option<Uuid>>,
+    pub projection_start_date: Option<Option<chrono::NaiveDate>>,
+    pub projection_end_date: Option<Option<chrono::NaiveDate>>,
+    pub extra_spent_limit: Option<Option<i32>>,
+    pub theme: Option<String>,
+}
+
 pub async fn update_user_settings(
     pool: &DbPool,
     user_id: Uuid,
-    display_currency: Option<CurrencyCode>,
-    language: Option<String>,
-    primary_schedule_id: Option<Option<Uuid>>,
-    projection_start_date: Option<Option<chrono::NaiveDate>>,
-    extra_spent_limit: Option<Option<i32>>,
-    theme: Option<String>,
+    patch: UserSettingsPatch,
 ) -> Result<UserSettingsRow, ApiError> {
     get_user_settings(pool, user_id).await?;
     let mut conn = connection::user_connection(pool, user_id).await?;
@@ -65,37 +70,43 @@ pub async fn update_user_settings(
 
     conn.transaction(|conn| {
         Box::pin(async move {
-            if let Some(currency) = display_currency {
+            if let Some(currency) = patch.display_currency {
                 diesel::update(user_settings::table.find(user_id))
                     .set(user_settings::display_currency.eq(currency))
                     .execute(conn)
                     .await?;
             }
-            if let Some(language) = language {
+            if let Some(language) = patch.language {
                 diesel::update(user_settings::table.find(user_id))
                     .set(user_settings::language.eq(language))
                     .execute(conn)
                     .await?;
             }
-            if let Some(schedule_id) = primary_schedule_id {
+            if let Some(schedule_id) = patch.primary_schedule_id {
                 diesel::update(user_settings::table.find(user_id))
                     .set(user_settings::primary_schedule_id.eq(schedule_id))
                     .execute(conn)
                     .await?;
             }
-            if let Some(start_date) = projection_start_date {
+            if let Some(start_date) = patch.projection_start_date {
                 diesel::update(user_settings::table.find(user_id))
                     .set(user_settings::projection_start_date.eq(start_date))
                     .execute(conn)
                     .await?;
             }
-            if let Some(limit) = extra_spent_limit {
+            if let Some(end_date) = patch.projection_end_date {
+                diesel::update(user_settings::table.find(user_id))
+                    .set(user_settings::projection_end_date.eq(end_date))
+                    .execute(conn)
+                    .await?;
+            }
+            if let Some(limit) = patch.extra_spent_limit {
                 diesel::update(user_settings::table.find(user_id))
                     .set(user_settings::extra_spent_limit.eq(limit))
                     .execute(conn)
                     .await?;
             }
-            if let Some(theme) = theme {
+            if let Some(theme) = patch.theme {
                 diesel::update(user_settings::table.find(user_id))
                     .set(user_settings::theme.eq(theme))
                     .execute(conn)

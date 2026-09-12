@@ -261,6 +261,7 @@ diesel::table! {
         extra_spent_limit -> Nullable<Int4>,
         language -> Text,
         theme -> Text,
+        projection_end_date -> Nullable<Date>,
     }
 }
 
