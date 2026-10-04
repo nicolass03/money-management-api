@@ -98,10 +98,10 @@ pub struct ProjectionHistoryRow {
     pub pay_date: NaiveDate,
     pub start_date: NaiveDate,
     pub end_date: NaiveDate,
-    pub income: i32,
-    pub planned_spent: i32,
-    pub free: i32,
-    pub cumulative: i32,
+    pub income: i64,
+    pub planned_spent: i64,
+    pub free: i64,
+    pub cumulative: i64,
     pub currency: CurrencyCode,
     pub created_at: DateTime<Utc>,
 }
@@ -290,12 +290,12 @@ pub struct AccountResponse {
     pub name: Option<String>,
     pub currency: CurrencyCode,
     pub initial_amount: i32,
-    pub balance: i32,
+    pub balance: i64,
     pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
-pub fn account_to_response(row: AccountRow, balance: i32) -> AccountResponse {
+pub fn account_to_response(row: AccountRow, balance: i64) -> AccountResponse {
     AccountResponse {
         id: row.id,
         name: row.name,

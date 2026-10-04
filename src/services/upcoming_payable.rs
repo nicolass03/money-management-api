@@ -34,9 +34,8 @@ pub fn build_upcoming_payable_items(
 ) -> Vec<PayableFutureItem> {
     let window_start = today;
     let window_end = add_days(today, horizon_days);
-    let expense_rows: Vec<ExpenseRow> = expenses.iter().map(|(row, _)| row.clone()).collect();
-    let recurring_materialized = build_recurring_materialized_set(&expense_rows);
-    let planned_materialized = build_planned_materialized_set(&expense_rows);
+    let recurring_materialized = build_recurring_materialized_set(expenses.iter().map(|(row, _)| row));
+    let planned_materialized = build_planned_materialized_set(expenses.iter().map(|(row, _)| row));
     let mut items = Vec::new();
 
     for (recurring, tags) in recurring_expenses {

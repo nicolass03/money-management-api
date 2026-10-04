@@ -105,12 +105,10 @@ fn get_interval_days(frequency: PayFrequency) -> Option<i32> {
     }
 }
 
+/// Next grid date on or after `from_date`. Unbounded by the anchor (works before it too), so the
+/// pay-period grid is well-defined for any date; occurrence lookups clamp to the anchor separately.
 fn get_next_interval_pay_date(anchor: &str, from_date: &str, interval_days: i32) -> String {
-    if compare_iso(from_date, anchor) <= 0 {
-        return anchor.to_string();
-    }
-    let diff = days_between(anchor, from_date);
-    let remainder = diff % interval_days;
+    let remainder = days_between(anchor, from_date).rem_euclid(interval_days);
     if remainder == 0 {
         return from_date.to_string();
     }
@@ -151,7 +149,11 @@ fn advance_pay_date(schedule: &PayScheduleInput, current: &str) -> String {
         return add_days(current, interval_days);
     }
     if schedule.frequency == PayFrequency::Yearly {
-        return add_months(current, 12);
+        // Re-derive from the anchor's month/day so a Feb 29 anchor returns to the 29th in leap
+        // years instead of drifting to the 28th forever.
+        let (_, anchor_month, anchor_day) = parse_date(&schedule.anchor_date);
+        let y = parse_date(current).0 + 1;
+        return to_iso(y, anchor_month, clamp_day_of_month(y, anchor_month, anchor_day));
     }
     let anchor_day = parse_date(&schedule.anchor_date).2;
     let (y, m, _) = parse_date(current);
@@ -159,6 +161,21 @@ fn advance_pay_date(schedule: &PayScheduleInput, current: &str) -> String {
     monthly_pay_date(new_y, new_m, anchor_day)
 }
 
+/// Next actual occurrence (a real charge or payday) on or after `from_date`. Unlike
+/// [`get_next_pay_date`], never returns a date before the schedule's anchor (its first occurrence),
+/// so a schedule starting in the future doesn't fire early.
+pub fn get_next_occurrence(schedule: &PayScheduleInput, from_date: &str) -> String {
+    let from = if compare_iso(from_date, &schedule.anchor_date) < 0 {
+        schedule.anchor_date.as_str()
+    } else {
+        from_date
+    };
+    get_next_pay_date(schedule, from)
+}
+
+/// Next date on the schedule's pay-period grid on or after `from_date`. Unbounded by the anchor:
+/// used for period boundaries, which must exist for any date. For real occurrences use
+/// [`get_next_occurrence`] / [`get_pay_dates_in_range`].
 pub fn get_next_pay_date(schedule: &PayScheduleInput, from_date: &str) -> String {
     if let Some(interval_days) = get_interval_days(schedule.frequency) {
         return get_next_interval_pay_date(&schedule.anchor_date, from_date, interval_days);
@@ -174,8 +191,9 @@ pub fn get_previous_pay_date(schedule: &PayScheduleInput, pay_date: &str) -> Str
         return add_days(pay_date, -interval_days);
     }
     if schedule.frequency == PayFrequency::Yearly {
-        let (y, m, d) = parse_date(pay_date);
-        return to_iso(y - 1, m, clamp_day_of_month(y - 1, m, d));
+        let (_, anchor_month, anchor_day) = parse_date(&schedule.anchor_date);
+        let y = parse_date(pay_date).0 - 1;
+        return to_iso(y, anchor_month, clamp_day_of_month(y, anchor_month, anchor_day));
     }
     let anchor_day = parse_date(&schedule.anchor_date).2;
     let (y, m, _) = parse_date(pay_date);
@@ -204,7 +222,8 @@ pub fn get_pay_dates_in_range(
     }
 
     let mut dates = Vec::new();
-    let mut current = get_next_pay_date(schedule, start_date);
+    // Occurrences never precede the anchor (the schedule's first charge/payday).
+    let mut current = get_next_occurrence(schedule, start_date);
 
     while compare_iso(&current, &effective_end) <= 0 {
         if compare_iso(&current, start_date) >= 0 {

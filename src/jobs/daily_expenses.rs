@@ -12,7 +12,7 @@ use crate::error::ApiError;
 use crate::repos::{connection, users};
 use crate::services::charge_due_expenses::charge_due_expenses_for_date;
 use crate::services::charge_due_income::charge_due_income_for_date;
-use crate::services::projection_history::ensure_history;
+use crate::services::projection_history::{sync_history, HistorySync};
 use crate::services::subscription_reminders::generate_subscription_reminders_for_date;
 use crate::state::DbPool;
 use crate::validation::today_iso;
@@ -20,7 +20,14 @@ use crate::validation::today_iso;
 /// Advisory lock key for the daily materialization job (arbitrary stable id).
 const DAILY_EXPENSES_LOCK_KEY: i64 = 8_451_903_221;
 
-/// Materializes both due recurring expenses and due scheduled income for today.
+/// Days (before today) each run re-checks, so a run missed through downtime or a deploy around the
+/// scheduled hour is caught up. Re-running a day is idempotent: materialized occurrences are unique
+/// per (template, date), deleted scheduled income keeps a tombstone, and charged recurring rows
+/// can't be deleted, so nothing is duplicated or resurrected.
+const CATCH_UP_DAYS: i64 = 6;
+
+/// Materializes due recurring expenses and due scheduled income for today and the
+/// `CATCH_UP_DAYS` before it (oldest first, so balance-based account picks see earlier charges).
 /// Income mirrors the recurring-expense flow: due occurrences become actual rows on
 /// their pay date, and each resource invalidates its own cache scope independently.
 pub async fn run_daily_expenses(
@@ -28,40 +35,36 @@ pub async fn run_daily_expenses(
     cache: Option<&UserDataCache>,
 ) -> Result<(String, i32), ApiError> {
     let date = today_iso();
+    let today = chrono::Utc::now().date_naive();
+    let dates: Vec<String> = (0..=CATCH_UP_DAYS)
+        .rev()
+        .map(|offset| (today - chrono::Duration::days(offset)).format("%Y-%m-%d").to_string())
+        .collect();
     let user_ids = users::list_user_ids(pool).await?;
     let mut created = 0;
     for user_id in user_ids {
         // Every per-user step is isolated: one user's failure (transient DB error, bad row) must
         // not abort the whole batch and skip everyone else. Each step self-heals on the next run.
-        let expenses_created = match charge_due_expenses_for_date(pool, user_id, &date).await {
-            Ok(count) => {
-                if count > 0 {
-                    if let Some(cache) = cache {
-                        cache.invalidate(InvalidationScope::ExpenseChange, user_id).await;
-                    }
-                }
-                count
+        let mut expenses_created = 0;
+        let mut income_created = 0;
+        for day in &dates {
+            match charge_due_expenses_for_date(pool, user_id, day).await {
+                Ok(count) => expenses_created += count,
+                Err(error) => tracing::error!(%user_id, day, %error, "charge due expenses failed"),
             }
-            Err(error) => {
-                tracing::error!(%user_id, %error, "charge due expenses failed");
-                0
+            match charge_due_income_for_date(pool, user_id, day).await {
+                Ok(count) => income_created += count,
+                Err(error) => tracing::error!(%user_id, day, %error, "charge due income failed"),
             }
-        };
-
-        let income_created = match charge_due_income_for_date(pool, user_id, &date).await {
-            Ok(count) => {
-                if count > 0 {
-                    if let Some(cache) = cache {
-                        cache.invalidate(InvalidationScope::IncomeChange, user_id).await;
-                    }
-                }
-                count
+        }
+        if let Some(cache) = cache {
+            if expenses_created > 0 {
+                cache.invalidate(InvalidationScope::ExpenseChange, user_id).await;
             }
-            Err(error) => {
-                tracing::error!(%user_id, %error, "charge due income failed");
-                0
+            if income_created > 0 {
+                cache.invalidate(InvalidationScope::IncomeChange, user_id).await;
             }
-        };
+        }
 
         // Cancellation-reminder rows drive the web banners; iOS schedules its own local
         // notifications. They are not server-cached, so no invalidation is needed here.
@@ -74,9 +77,15 @@ pub async fn run_daily_expenses(
                 }
             };
 
-        // Freeze any period that has now closed. Runs after materialization so a period closing
-        // today already has its due income/expenses materialized before it is frozen.
-        let history_created = match ensure_history(pool, user_id).await {
+        // Freeze any period that has now closed. Runs after materialization so a closing period
+        // already has its due income/expenses materialized before it is frozen. If a catch-up just
+        // materialized rows into an already-frozen period, re-freeze from the oldest catch-up day.
+        let sync = if expenses_created + income_created > 0 {
+            HistorySync::From(today - chrono::Duration::days(CATCH_UP_DAYS))
+        } else {
+            HistorySync::Append
+        };
+        let history_created = match sync_history(pool, user_id, sync, false).await {
             Ok(report) => report.inserted as i32,
             Err(error) => {
                 tracing::error!(%user_id, %error, "projection history freeze failed");
@@ -148,10 +157,16 @@ pub fn spawn_scheduler(pool: DbPool, cache: Arc<UserDataCache>, config: &Config)
 
     let hour = config.daily_expenses_hour;
     tokio::spawn(async move {
+        // Run once at startup, then daily: a restart that straddles the scheduled hour must not
+        // skip the day (the catch-up window covers anything else missed).
+        let mut first_run = true;
         loop {
-            let wait = duration_until_next_run(hour);
-            tracing::debug!(?wait, hour, "daily expense scheduler sleeping");
-            tokio::time::sleep(wait).await;
+            if !first_run {
+                let wait = duration_until_next_run(hour);
+                tracing::debug!(?wait, hour, "daily expense scheduler sleeping");
+                tokio::time::sleep(wait).await;
+            }
+            first_run = false;
 
             match acquire_lock(&pool).await {
                 Ok(Some(mut lock_conn)) => {

@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::repos::{connection, recurring_expenses, subscription_reminders};
-use crate::services::pay_periods::{add_days, get_next_pay_date, schedule_from_recurring};
+use crate::services::pay_periods::{add_days, get_next_occurrence, schedule_from_recurring};
 use crate::state::DbPool;
 
 const FIVE_DAY_KIND: &str = "five_day";
@@ -30,7 +30,7 @@ pub async fn generate_subscription_reminders_for_date(
     let mut created = 0;
     for recurring in candidates {
         let schedule = schedule_from_recurring(&recurring);
-        let next_charge = get_next_pay_date(&schedule, date);
+        let next_charge = get_next_occurrence(&schedule, date);
 
         // Respect an end date: a charge past the last payment date never happens, so don't remind.
         if let Some(last) = recurring.last_payment_date {

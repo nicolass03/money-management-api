@@ -1,4 +1,6 @@
 use axum::extract::{Path, State};
+use crate::routes::helpers::finish_write;
+use crate::services::projection_history::HistorySync;
 use axum::Json;
 use uuid::Uuid;
 
@@ -100,6 +102,7 @@ pub async fn update_schedule(
     let existing = schedules_repo::find_by_id(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    let settings = state.loader.user_settings(user.sub).await?;
     let (account_id, currency) = resolve_account_for_update(
         &state.db_pool,
         user.sub,
@@ -121,17 +124,19 @@ pub async fn update_schedule(
     )
     .await?
     .ok_or(ApiError::NotFound)?;
-    state
-        .cache
-        .invalidate(InvalidationScope::ScheduleChange, user.sub).await;
-
-    // Editing the primary schedule can move its period boundaries, invalidating the frozen past
-    // rows computed under the old anchor/frequency. Non-primary edits don't affect frozen periods
-    // (past income comes from actual rows, not schedule definitions), so only rebuild for primary.
-    let settings = state.loader.user_settings(user.sub).await?;
-    if settings.primary_schedule_id == Some(id) {
-        crate::services::projection_history::reinitialize_history(&state.db_pool, user.sub).await?;
-    }
+    // Moving the primary schedule's anchor/frequency moves its period boundaries, invalidating the
+    // frozen past rows computed under the old grid. Other edits don't affect frozen periods (past
+    // income comes from actual rows, not schedule definitions; amount only shapes projected pay).
+    let boundaries_moved =
+        existing.anchor_date != schedule.anchor_date || existing.frequency != schedule.frequency;
+    let rebuild = boundaries_moved && settings.primary_schedule_id == Some(id);
+    finish_write(
+        &state,
+        user.sub,
+        InvalidationScope::ScheduleChange,
+        rebuild.then_some(HistorySync::Rebuild),
+    )
+    .await;
     Ok(Json(schedule.into()))
 }
 

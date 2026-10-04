@@ -7,7 +7,7 @@ use crate::error::ApiError;
 use crate::models::ExchangeRateSnapshotRow;
 use crate::repos::connection;
 use crate::repos::exchange_rates as exchange_rates_repo;
-use crate::services::currency::ExchangeRates;
+use crate::services::currency::{has_all_currencies, ExchangeRates};
 use crate::services::fx_memory::{get_memory_rates, set_memory_rates};
 use crate::state::DbPool;
 use diesel_async::AsyncPgConnection;
@@ -37,6 +37,9 @@ pub fn parse_snapshot_row(row: &ExchangeRateSnapshotRow) -> Option<ExchangeRates
         let rate = value.as_f64()?;
         map.insert(key.clone(), rate);
     }
+    if !has_all_currencies(&map) {
+        return None;
+    }
     Some(ExchangeRates {
         base: row.base_currency.to_iso().to_string(),
         rates: map,
@@ -58,7 +61,7 @@ pub async fn fetch_exchange_rates() -> Result<ExchangeRates, ApiError> {
         .json()
         .await
         .map_err(|error| ApiError::Internal(error.to_string()))?;
-    if data.result != "success" {
+    if data.result != "success" || !has_all_currencies(&data.rates) {
         return Err(ApiError::Internal(
             "exchange rate API returned invalid data".into(),
         ));

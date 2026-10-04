@@ -8,8 +8,8 @@ use crate::models::{
     RecurringExpenseRow,
 };
 use crate::services::budget_status::{
-    budget_overlaps_period, get_budget_projection_amount, get_budget_projection_period_date,
-    is_budget_projection_projected, is_dated_budget,
+    budget_overlaps_period, get_budget_projection_amount, is_budget_projection_projected,
+    is_dated_budget,
 };
 use crate::services::currency::{convert_amount, ExchangeRates};
 use crate::services::materialization::{
@@ -45,14 +45,14 @@ impl ExpensePeriodKey {
 pub struct ExpensePeriodViewResponse {
     pub period: PayPeriodResponse,
     pub items: Vec<ProjectionExpenseItem>,
-    pub total_spend: i32,
+    pub total_spend: i64,
     pub is_pay_period: bool,
     pub by_tag: Vec<TagAmountEntry>,
     pub subscription_split: SubscriptionSplit,
     /// Actual unplanned ("extra") spend in the period: persisted expenses not tied to a
     /// recurring, planned, or budget source, converted to the display currency. Always computed
     /// from raw expense rows (never projected items) so it reflects money actually spent.
-    pub extra_spent: i32,
+    pub extra_spent: i64,
     /// The user's configured extra-spent limit in display-currency minor units, or `None` when
     /// unset. Clients only surface the limit comparison for the pay period (`is_pay_period`).
     pub extra_spent_limit: Option<i32>,
@@ -80,14 +80,14 @@ impl From<PayPeriod> for PayPeriodResponse {
 #[serde(rename_all = "camelCase")]
 pub struct TagAmountEntry {
     pub tag: String,
-    pub amount: i32,
+    pub amount: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionSplit {
-    pub subscription: i32,
-    pub other: i32,
+    pub subscription: i64,
+    pub other: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,24 +97,25 @@ pub struct ExpenseChartSummaryResponse {
     pub subscription_split: SubscriptionSplit,
 }
 
-pub(crate) struct ExpenseWithTags {
-    pub row: ExpenseRow,
-    pub tags: Vec<String>,
+// Borrowed views over the loaded `(row, tags)` tuples, so building items never clones the dataset.
+pub(crate) struct ExpenseWithTags<'a> {
+    pub row: &'a ExpenseRow,
+    pub tags: &'a [String],
 }
 
-pub(crate) struct RecurringWithTags {
-    pub row: RecurringExpenseRow,
-    pub tags: Vec<String>,
+pub(crate) struct RecurringWithTags<'a> {
+    pub row: &'a RecurringExpenseRow,
+    pub tags: &'a [String],
 }
 
-pub(crate) struct PlannedWithTags {
-    pub row: PlannedExpenseRow,
-    pub tags: Vec<String>,
+pub(crate) struct PlannedWithTags<'a> {
+    pub row: &'a PlannedExpenseRow,
+    pub tags: &'a [String],
 }
 
-pub(crate) struct BudgetWithTags {
-    pub row: BudgetRow,
-    pub tags: Vec<String>,
+pub(crate) struct BudgetWithTags<'a> {
+    pub row: &'a BudgetRow,
+    pub tags: &'a [String],
     pub spent: i32,
 }
 
@@ -219,7 +220,7 @@ pub fn build_expense_period_view(
             .collect()
     };
 
-    let total_spend: i32 = items.iter().map(|item| item.converted_amount).sum();
+    let total_spend: i64 = items.iter().map(|item| i64::from(item.converted_amount)).sum();
 
     // Chart aggregates are computed over the period's actual expenses (the chart range is
     // always the resolved period range), reusing the already-loaded expense list — no extra
@@ -261,7 +262,7 @@ pub(crate) fn compute_extra_spent(
     period: &PayPeriod,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
-) -> i32 {
+) -> i64 {
     expenses
         .iter()
         .filter(|(row, _)| is_manual_extra_expense(row))
@@ -269,7 +270,7 @@ pub(crate) fn compute_extra_spent(
             let date = row.date.format("%Y-%m-%d").to_string();
             is_date_in_period(&date, period)
         })
-        .map(|(row, _)| convert_amount(row.amount, row.currency, display_currency, rates))
+        .map(|(row, _)| i64::from(convert_amount(row.amount, row.currency, display_currency, rates)))
         .sum()
 }
 
@@ -286,7 +287,7 @@ pub fn compute_extra_spent_by_tag(
         end_date: to.to_string(),
     };
 
-    let mut tag_totals: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+    let mut tag_totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
 
     for (row, tags) in expenses {
         if !is_manual_extra_expense(row) {
@@ -296,7 +297,7 @@ pub fn compute_extra_spent_by_tag(
         if !is_date_in_period(&date, &period) {
             continue;
         }
-        let converted = convert_amount(row.amount, row.currency, display_currency, rates);
+        let converted = i64::from(convert_amount(row.amount, row.currency, display_currency, rates));
         for tag in tags {
             *tag_totals.entry(tag.clone()).or_insert(0) += converted;
         }
@@ -323,16 +324,16 @@ pub fn build_chart_summary(
         end_date: to.to_string(),
     };
 
-    let mut tag_totals: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
-    let mut subscription = 0i32;
-    let mut other = 0i32;
+    let mut tag_totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut subscription = 0i64;
+    let mut other = 0i64;
 
     for (row, tags) in expenses {
         let date = row.date.format("%Y-%m-%d").to_string();
         if !is_date_in_period(&date, &period) {
             continue;
         }
-        let converted = convert_amount(row.amount, row.currency, display_currency, rates);
+        let converted = i64::from(convert_amount(row.amount, row.currency, display_currency, rates));
         if row.is_subscription {
             subscription += converted;
         } else {
@@ -359,11 +360,53 @@ pub(crate) fn build_expense_period_materialized(
     expense_list: &[ExpenseWithTags],
     budgets: &[BudgetWithTags],
 ) -> ExpensePeriodMaterialized {
-    let expense_rows: Vec<ExpenseRow> = expense_list.iter().map(|e| e.row.clone()).collect();
+    let rows = || expense_list.iter().map(|expense| expense.row);
     ExpensePeriodMaterialized {
-        recurring_materialized: build_recurring_materialized_set(&expense_rows),
-        planned_materialized: build_planned_materialized_set(&expense_rows),
+        recurring_materialized: build_recurring_materialized_set(rows()),
+        planned_materialized: build_planned_materialized_set(rows()),
         dated_budget_ids: build_dated_budget_ids(budgets),
+    }
+}
+
+/// A persisted (actual) expense row as a list item, converted to the display currency.
+fn actual_expense_item(
+    expense: &ExpenseWithTags,
+    recurring_list: &[RecurringWithTags],
+    display_currency: CurrencyCode,
+    rates: &ExchangeRates,
+) -> ProjectionExpenseItem {
+    let row = expense.row;
+    let date = row.date.format("%Y-%m-%d").to_string();
+    // The template's amount is shown as the "original" only while the charge wasn't overridden.
+    let recurring_source = row
+        .recurring_id
+        .filter(|_| !row.amount_overridden)
+        .and_then(|id| recurring_list.iter().find(|r| r.row.id == id));
+    let due_date = row
+        .scheduled_date
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .or_else(|| row.recurring_id.map(|_| recurring_due_date(row)));
+
+    ProjectionExpenseItem {
+        id: Some(row.id),
+        recurring_id: row.recurring_id,
+        planned_expense_id: row.planned_expense_id,
+        budget_id: row.budget_id,
+        budget_total: None,
+        budget_spent: None,
+        is_budget_summary: None,
+        name: row.name.clone(),
+        scheduled_date: due_date.filter(|due| *due != date),
+        date,
+        amount: row.amount,
+        currency: row.currency,
+        original_amount: recurring_source.map(|r| r.row.amount),
+        original_currency: recurring_source.map(|r| r.row.currency),
+        converted_amount: convert_amount(row.amount, row.currency, display_currency, rates),
+        tags: expense.tags.to_vec(),
+        is_subscription: row.is_subscription,
+        projected: false,
+        created_at: Some(row.created_at),
     }
 }
 
@@ -389,6 +432,7 @@ pub(crate) fn get_expense_items_in_period(
         if !is_date_in_period(&date, period) {
             continue;
         }
+        // Spend against a dated budget is represented by the budget's own line instead.
         if expense
             .row
             .budget_id
@@ -396,60 +440,17 @@ pub(crate) fn get_expense_items_in_period(
         {
             continue;
         }
-
-        let recurring_source = expense
-            .row
-            .recurring_id
-            .and_then(|id| recurring_list.iter().find(|r| r.row.id == id));
-
-        let due_date = expense
-            .row
-            .scheduled_date
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .or_else(|| {
-                expense
-                    .row
-                    .recurring_id
-                    .map(|_| recurring_due_date(&expense.row))
-            });
-
-        items.push(ProjectionExpenseItem {
-            id: Some(expense.row.id),
-            recurring_id: expense.row.recurring_id,
-            planned_expense_id: expense.row.planned_expense_id,
-            budget_id: expense.row.budget_id,
-            budget_total: None,
-            budget_spent: None,
-            is_budget_summary: None,
-            name: expense.row.name.clone(),
-            date: date.clone(),
-            scheduled_date: due_date.filter(|due| *due != date),
-            amount: expense.row.amount,
-            currency: expense.row.currency,
-            original_amount: recurring_source
-                .filter(|_| !expense.row.amount_overridden)
-                .map(|r| r.row.amount),
-            original_currency: recurring_source
-                .filter(|_| !expense.row.amount_overridden)
-                .map(|r| r.row.currency),
-            converted_amount: to_display(
-                expense.row.amount,
-                expense.row.currency,
-                display_currency,
-                rates,
-            ),
-            tags: expense.tags.clone(),
-            is_subscription: expense.row.is_subscription,
-            projected: false,
-            created_at: Some(expense.row.created_at),
-        });
+        items.push(actual_expense_item(expense, recurring_list, display_currency, rates));
     }
 
     for recurring in recurring_list {
-        let schedule = schedule_from_recurring(&recurring.row);
+        let schedule = schedule_from_recurring(recurring.row);
         let due_dates = get_pay_dates_in_range(&schedule, &period.start_date, &period.end_date);
         for due_date in due_dates {
-            if due_date.as_str() <= today {
+            // Past occurrences are only ever counted through their materialized expense row.
+            // Today's still counts as projected until the daily job charges it (same cutoff as
+            // projected income), so it's never invisible between midnight and the job's run.
+            if due_date.as_str() < today {
                 continue;
             }
             if is_recurring_occurrence_materialized(
@@ -468,19 +469,19 @@ pub(crate) fn get_expense_items_in_period(
                 budget_spent: None,
                 is_budget_summary: None,
                 name: recurring.row.name.clone(),
-                date: due_date.clone(),
+                date: due_date,
                 scheduled_date: None,
                 amount: recurring.row.amount,
                 currency: recurring.row.currency,
                 original_amount: None,
                 original_currency: None,
-                converted_amount: to_display(
+                converted_amount: convert_amount(
                     recurring.row.amount,
                     recurring.row.currency,
                     display_currency,
                     rates,
                 ),
-                tags: recurring.tags.clone(),
+                tags: recurring.tags.to_vec(),
                 is_subscription: recurring.row.is_subscription,
                 projected: true,
                 created_at: None,
@@ -490,12 +491,19 @@ pub(crate) fn get_expense_items_in_period(
 
     for planned in planned_list {
         // Undated items stay out of periods/projections until paid.
-        let Some(date) = planned.row.date else { continue };
-        let date = date.format("%Y-%m-%d").to_string();
-        if !is_date_in_period(&date, period) || date.as_str() <= today {
+        let Some(due) = planned.row.date else { continue };
+        if is_planned_expense_materialized(planned_materialized, planned.row.id) {
             continue;
         }
-        if is_planned_expense_materialized(planned_materialized, planned.row.id) {
+        let due = due.format("%Y-%m-%d").to_string();
+        // An unpaid item past its date is still owed: project it as due today (in the current
+        // period), keeping its original date as `scheduled_date`, until it is paid.
+        let (date, scheduled_date) = if due.as_str() < today {
+            (today.to_string(), Some(due))
+        } else {
+            (due, None)
+        };
+        if !is_date_in_period(&date, period) {
             continue;
         }
         items.push(ProjectionExpenseItem {
@@ -507,51 +515,31 @@ pub(crate) fn get_expense_items_in_period(
             budget_spent: None,
             is_budget_summary: None,
             name: planned.row.name.clone(),
-            date: date.clone(),
-            scheduled_date: None,
+            date,
+            scheduled_date,
             amount: planned.row.amount,
             currency: planned.row.currency,
             original_amount: None,
             original_currency: None,
-            converted_amount: to_display(
+            converted_amount: convert_amount(
                 planned.row.amount,
                 planned.row.currency,
                 display_currency,
                 rates,
             ),
-            tags: planned.tags.clone(),
+            tags: planned.tags.to_vec(),
             is_subscription: false,
             projected: true,
             created_at: None,
         });
     }
 
-    if !options.include_budget_summaries {
-        for budget in budgets {
-            if !is_dated_budget(budget.row.start_date, budget.row.end_date) {
-                continue;
-            }
-            let spent = budget.spent;
-            let projection_amount = get_budget_projection_amount(
-                budget.row.amount,
-                budget.row.end_date,
-                spent,
-                today,
-                budget.row.completed_at.as_ref(),
-            );
-            let end_s = budget.row.end_date.unwrap().format("%Y-%m-%d").to_string();
-            if projection_amount <= 0 && today > end_s.as_str() {
-                continue;
-            }
-            let anchor_date = get_budget_projection_period_date(
-                budget.row.start_date,
-                budget.row.end_date,
-                today,
-            );
-            let Some(anchor_date) = anchor_date else {
-                continue;
-            };
-            if !is_date_in_period(&anchor_date, period) || projection_amount <= 0 {
+    for budget in budgets {
+        let (Some(start), Some(end)) = (budget.row.start_date, budget.row.end_date) else {
+            continue;
+        };
+        if options.include_budget_summaries {
+            if !budget_overlaps_period(budget.row.start_date, budget.row.end_date, period) {
                 continue;
             }
             items.push(ProjectionExpenseItem {
@@ -560,64 +548,74 @@ pub(crate) fn get_expense_items_in_period(
                 planned_expense_id: None,
                 budget_id: Some(budget.row.id),
                 budget_total: Some(budget.row.amount),
-                budget_spent: Some(spent),
-                is_budget_summary: Some(false),
+                budget_spent: Some(budget.spent),
+                is_budget_summary: Some(true),
                 name: budget.row.name.clone(),
-                date: anchor_date,
+                date: start.format("%Y-%m-%d").to_string(),
                 scheduled_date: None,
-                amount: projection_amount,
+                amount: budget.spent,
                 currency: budget.row.currency,
                 original_amount: None,
                 original_currency: None,
-                converted_amount: to_display(
-                    projection_amount,
+                converted_amount: convert_amount(
+                    budget.spent,
                     budget.row.currency,
                     display_currency,
                     rates,
                 ),
-                tags: budget.tags.clone(),
-                is_subscription: false,
-                projected: is_budget_projection_projected(
-                    budget.row.start_date,
-                    budget.row.end_date,
-                    today,
-                ),
-                created_at: None,
-            });
-        }
-    }
-
-    if options.include_budget_summaries {
-        for budget in budgets {
-            if !is_dated_budget(budget.row.start_date, budget.row.end_date) {
-                continue;
-            }
-            if !budget_overlaps_period(budget.row.start_date, budget.row.end_date, period) {
-                continue;
-            }
-            let spent = budget.spent;
-            items.push(ProjectionExpenseItem {
-                id: None,
-                recurring_id: None,
-                planned_expense_id: None,
-                budget_id: Some(budget.row.id),
-                budget_total: Some(budget.row.amount),
-                budget_spent: Some(spent),
-                is_budget_summary: Some(true),
-                name: budget.row.name.clone(),
-                date: budget.row.start_date.unwrap().format("%Y-%m-%d").to_string(),
-                scheduled_date: None,
-                amount: spent,
-                currency: budget.row.currency,
-                original_amount: None,
-                original_currency: None,
-                converted_amount: to_display(spent, budget.row.currency, display_currency, rates),
-                tags: budget.tags.clone(),
+                tags: budget.tags.to_vec(),
                 is_subscription: false,
                 projected: false,
                 created_at: None,
             });
+            continue;
         }
+
+        // Projection line: always on the budget's end date — the full envelope while it runs,
+        // actual spent once it has ended or been completed. A fixed date keeps the line in one
+        // period for the budget's whole life, and by the time that period closes (and is frozen)
+        // the budget has ended, so frozen history never holds a stale envelope amount.
+        let projection_amount = get_budget_projection_amount(
+            budget.row.amount,
+            budget.row.end_date,
+            budget.spent,
+            today,
+            budget.row.completed_at.as_ref(),
+        );
+        let date = end.format("%Y-%m-%d").to_string();
+        if projection_amount <= 0 || !is_date_in_period(&date, period) {
+            continue;
+        }
+        items.push(ProjectionExpenseItem {
+            id: None,
+            recurring_id: None,
+            planned_expense_id: None,
+            budget_id: Some(budget.row.id),
+            budget_total: Some(budget.row.amount),
+            budget_spent: Some(budget.spent),
+            is_budget_summary: Some(false),
+            name: budget.row.name.clone(),
+            date,
+            scheduled_date: None,
+            amount: projection_amount,
+            currency: budget.row.currency,
+            original_amount: None,
+            original_currency: None,
+            converted_amount: convert_amount(
+                projection_amount,
+                budget.row.currency,
+                display_currency,
+                rates,
+            ),
+            tags: budget.tags.to_vec(),
+            is_subscription: false,
+            projected: is_budget_projection_projected(
+                budget.row.start_date,
+                budget.row.end_date,
+                today,
+            ),
+            created_at: None,
+        });
     }
 
     sort_projection_expense_items(&mut items, options.sort);
@@ -645,69 +643,11 @@ fn get_actual_expenses_in_date_range(
             let date = expense.row.date.format("%Y-%m-%d").to_string();
             is_date_in_period(&date, &period)
         })
-        .map(|expense| {
-            let date = expense.row.date.format("%Y-%m-%d").to_string();
-            let recurring_source = expense
-                .row
-                .recurring_id
-                .and_then(|id| recurring_list.iter().find(|r| r.row.id == id));
-            let due_date = expense
-                .row
-                .scheduled_date
-                .map(|d| d.format("%Y-%m-%d").to_string())
-                .or_else(|| {
-                    expense
-                        .row
-                        .recurring_id
-                        .map(|_| recurring_due_date(&expense.row))
-                });
-
-            ProjectionExpenseItem {
-                id: Some(expense.row.id),
-                recurring_id: expense.row.recurring_id,
-                planned_expense_id: expense.row.planned_expense_id,
-                budget_id: expense.row.budget_id,
-                budget_total: None,
-                budget_spent: None,
-                is_budget_summary: None,
-                name: expense.row.name.clone(),
-                date: date.clone(),
-                scheduled_date: due_date
-                    .filter(|due| *due != date)
-                    .map(|due| due.clone()),
-                amount: expense.row.amount,
-                currency: expense.row.currency,
-                original_amount: recurring_source
-                    .filter(|_| !expense.row.amount_overridden)
-                    .map(|r| r.row.amount),
-                original_currency: recurring_source
-                    .filter(|_| !expense.row.amount_overridden)
-                    .map(|r| r.row.currency),
-                converted_amount: to_display(
-                    expense.row.amount,
-                    expense.row.currency,
-                    display_currency,
-                    rates,
-                ),
-                tags: expense.tags.clone(),
-                is_subscription: expense.row.is_subscription,
-                projected: false,
-                created_at: Some(expense.row.created_at),
-            }
-        })
+        .map(|expense| actual_expense_item(expense, recurring_list, display_currency, rates))
         .collect();
 
     sort_projection_expense_items(&mut items, sort);
     items
-}
-
-fn to_display(
-    amount: i32,
-    currency: CurrencyCode,
-    display_currency: CurrencyCode,
-    rates: &ExchangeRates,
-) -> i32 {
-    convert_amount(amount, currency, display_currency, rates)
 }
 
 fn build_dated_budget_ids(budgets: &[BudgetWithTags]) -> HashSet<Uuid> {
@@ -718,48 +658,37 @@ fn build_dated_budget_ids(budgets: &[BudgetWithTags]) -> HashSet<Uuid> {
         .collect()
 }
 
-pub(crate) fn to_expense_with_tags(expenses: &[(ExpenseRow, Vec<String>)]) -> Vec<ExpenseWithTags> {
+pub(crate) fn to_expense_with_tags(expenses: &[(ExpenseRow, Vec<String>)]) -> Vec<ExpenseWithTags<'_>> {
     expenses
         .iter()
-        .map(|(row, tags)| ExpenseWithTags {
-            row: row.clone(),
-            tags: tags.clone(),
-        })
+        .map(|(row, tags)| ExpenseWithTags { row, tags })
         .collect()
 }
 
 pub(crate) fn to_recurring_with_tags(
     recurring: &[(RecurringExpenseRow, Vec<String>)],
-) -> Vec<RecurringWithTags> {
+) -> Vec<RecurringWithTags<'_>> {
     recurring
         .iter()
-        .map(|(row, tags)| RecurringWithTags {
-            row: row.clone(),
-            tags: tags.clone(),
-        })
+        .map(|(row, tags)| RecurringWithTags { row, tags })
         .collect()
 }
 
 pub(crate) fn to_planned_with_tags(
     planned: &[(PlannedExpenseRow, Vec<String>)],
-) -> Vec<PlannedWithTags> {
+) -> Vec<PlannedWithTags<'_>> {
     planned
         .iter()
-        .map(|(row, tags)| PlannedWithTags {
-            row: row.clone(),
-            tags: tags.clone(),
-        })
+        .map(|(row, tags)| PlannedWithTags { row, tags })
         .collect()
 }
 
-pub(crate) fn to_budget_with_tags(budgets: &[(BudgetRow, Vec<String>, i32)]) -> Vec<BudgetWithTags> {
+pub(crate) fn to_budget_with_tags(
+    budgets: &[(BudgetRow, Vec<String>, i32)],
+) -> Vec<BudgetWithTags<'_>> {
     budgets
         .iter()
-        .map(|(row, tags, spent)| BudgetWithTags {
-            row: row.clone(),
-            tags: tags.clone(),
-            spent: *spent,
-        })
+        .map(|(row, tags, spent)| BudgetWithTags { row, tags, spent: *spent })
         .collect()
 }
 

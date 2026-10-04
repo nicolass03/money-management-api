@@ -59,6 +59,13 @@ pub async fn charge_due_expenses_for_date(
             }
         }
 
+        // Never materialize an occurrence dated before the template was last saved: creating or
+        // editing a template doesn't backfill history, even when the daily job catches up on days
+        // it missed.
+        if due_date < recurring.updated_at.date_naive() {
+            continue;
+        }
+
         let schedule = schedule_from_recurring(&recurring);
         let due_dates = get_pay_dates_in_range(&schedule, date, date);
         if due_dates.is_empty() || materialized_ids.contains(&recurring.id) {
@@ -107,7 +114,7 @@ pub async fn charge_due_expenses_for_date(
         // Reflect the charge against the chosen account's running balance for later iterations.
         if let Some(id) = account_id {
             if let Some(balance) = balances.get_mut(&id) {
-                *balance -= amount;
+                *balance -= i64::from(amount);
             }
         }
 

@@ -40,22 +40,6 @@ pub fn get_budget_projection_amount(
     }
 }
 
-pub fn get_budget_projection_period_date(
-    start_date: Option<NaiveDate>,
-    end_date: Option<NaiveDate>,
-    today: &str,
-) -> Option<String> {
-    let (Some(start), Some(end)) = (start_date, end_date) else {
-        return None;
-    };
-    let end_s = end.format("%Y-%m-%d").to_string();
-    if today <= end_s.as_str() {
-        Some(start.format("%Y-%m-%d").to_string())
-    } else {
-        Some(end_s)
-    }
-}
-
 pub fn is_budget_projection_projected(
     start_date: Option<NaiveDate>,
     end_date: Option<NaiveDate>,

@@ -1,4 +1,6 @@
 use axum::extract::State;
+use crate::routes::helpers::finish_write;
+use crate::services::projection_history::HistorySync;
 use axum::Json;
 
 use crate::auth::extractor::AuthenticatedUser;
@@ -122,22 +124,20 @@ pub async fn patch_settings(
     )
     .await?;
 
-    state
-        .cache
-        .invalidate(InvalidationScope::SettingsChange, user.sub).await;
-
     // A new primary schedule, a moved projection start, or a different display currency all change
-    // the period boundaries or denomination of the frozen history, so rebuild it. Revision was
-    // already bumped above, so the next projections read picks up the rebuilt rows.
-    let reinitialize_history = body.primary_schedule_id.is_some()
+    // the period boundaries or denomination of the frozen history, so rebuild it. Extending an
+    // expired horizon may reveal closed periods that were never frozen, so append those.
+    let history = if body.primary_schedule_id.is_some()
         || projection_start_date.is_some()
-        || display_currency.is_some();
-    if reinitialize_history {
-        crate::services::projection_history::reinitialize_history(&state.db_pool, user.sub).await?;
+        || display_currency.is_some()
+    {
+        Some(HistorySync::Rebuild)
     } else if projection_end_date.is_some() {
-        // Extending an expired horizon may reveal closed periods that were never frozen.
-        crate::services::projection_history::ensure_history(&state.db_pool, user.sub).await?;
-    }
+        Some(HistorySync::Append)
+    } else {
+        None
+    };
+    finish_write(&state, user.sub, InvalidationScope::SettingsChange, history).await;
 
     let response = settings_response(&state.db_pool, user.sub, row).await?;
     Ok(Json(response))

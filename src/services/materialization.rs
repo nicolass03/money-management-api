@@ -16,7 +16,9 @@ pub fn materialized_recurring_key(recurring_id: Uuid, due_date: &str) -> String 
     format!("{recurring_id}:{due_date}")
 }
 
-pub fn build_recurring_materialized_set(expense_list: &[ExpenseRow]) -> HashSet<String> {
+pub fn build_recurring_materialized_set<'a>(
+    expense_list: impl IntoIterator<Item = &'a ExpenseRow>,
+) -> HashSet<String> {
     let mut materialized = HashSet::new();
     for expense in expense_list {
         if let Some(recurring_id) = expense.recurring_id {
@@ -29,9 +31,11 @@ pub fn build_recurring_materialized_set(expense_list: &[ExpenseRow]) -> HashSet<
     materialized
 }
 
-pub fn build_planned_materialized_set(expense_list: &[ExpenseRow]) -> HashSet<Uuid> {
+pub fn build_planned_materialized_set<'a>(
+    expense_list: impl IntoIterator<Item = &'a ExpenseRow>,
+) -> HashSet<Uuid> {
     expense_list
-        .iter()
+        .into_iter()
         .filter_map(|expense| expense.planned_expense_id)
         .collect()
 }

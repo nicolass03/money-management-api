@@ -15,10 +15,10 @@ pub struct NewProjectionHistory {
     pub pay_date: NaiveDate,
     pub start_date: NaiveDate,
     pub end_date: NaiveDate,
-    pub income: i32,
-    pub planned_spent: i32,
-    pub free: i32,
-    pub cumulative: i32,
+    pub income: i64,
+    pub planned_spent: i64,
+    pub free: i64,
+    pub cumulative: i64,
     pub currency: CurrencyCode,
 }
 
@@ -81,19 +81,50 @@ pub async fn upsert_many_with_conn(
         .map_err(ApiError::from)
 }
 
-/// Drops every frozen period for a schedule. Used before re-initializing when the schedule's
-/// periodicity/boundaries or the display currency changed, so stale values never linger.
-pub async fn delete_for_schedule_with_conn(
+/// Drops a schedule's frozen periods closing after `after` (all of them when `None`), so they can be
+/// re-frozen from the last kept row onward.
+pub async fn delete_after_with_conn(
     conn: &mut AsyncPgConnection,
     user_id: Uuid,
     schedule_id: Uuid,
+    after: Option<NaiveDate>,
 ) -> Result<usize, ApiError> {
-    diesel::delete(
+    let mut query = diesel::delete(
         projection_history::table
             .filter(projection_history::user_id.eq(user_id))
             .filter(projection_history::schedule_id.eq(schedule_id)),
     )
-    .execute(conn)
-    .await
-    .map_err(ApiError::from)
+    .into_boxed();
+    if let Some(after) = after {
+        query = query.filter(projection_history::pay_date.gt(after));
+    }
+    query.execute(conn).await.map_err(ApiError::from)
+}
+
+/// Pay date of the latest frozen period for a schedule, if any.
+pub async fn last_pay_date_with_conn(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+    schedule_id: Uuid,
+) -> Result<Option<NaiveDate>, ApiError> {
+    projection_history::table
+        .filter(projection_history::user_id.eq(user_id))
+        .filter(projection_history::schedule_id.eq(schedule_id))
+        .select(diesel::dsl::max(projection_history::pay_date))
+        .first(conn)
+        .await
+        .map_err(ApiError::from)
+}
+
+/// Drops every frozen period for the user (all schedules). Last-resort recovery when a re-freeze
+/// fails: with no frozen rows, reads fall back to a full live computation until the daily job
+/// freezes them again, rather than serving stale aggregates.
+pub async fn delete_all_for_user_with_conn(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+) -> Result<usize, ApiError> {
+    diesel::delete(projection_history::table.filter(projection_history::user_id.eq(user_id)))
+        .execute(conn)
+        .await
+        .map_err(ApiError::from)
 }

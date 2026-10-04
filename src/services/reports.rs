@@ -33,13 +33,13 @@ pub struct ReportRange {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportKpis {
-    pub total_income: i32,
-    pub total_expenses: i32,
-    pub net_cash_flow: i32,
-    pub extra_spent: i32,
+    pub total_income: i64,
+    pub total_expenses: i64,
+    pub net_cash_flow: i64,
+    pub extra_spent: i64,
     pub expense_count: i32,
     pub income_count: i32,
-    pub avg_daily_spend: i32,
+    pub avg_daily_spend: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,9 +56,9 @@ pub struct ReportTimeBucket {
     pub start_date: String,
     pub end_date: String,
     pub label: String,
-    pub income: i32,
-    pub expenses: i32,
-    pub net: i32,
+    pub income: i64,
+    pub expenses: i64,
+    pub net: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,7 +68,7 @@ pub struct ReportExtraSpentBucket {
     pub start_date: String,
     pub end_date: String,
     pub label: String,
-    pub extra_spent: i32,
+    pub extra_spent: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -217,13 +217,13 @@ fn sum_income_in_period(
     period: &PayPeriod,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
-) -> (i32, i32) {
-    let mut total = 0i32;
+) -> (i64, i32) {
+    let mut total = 0i64;
     let mut count = 0i32;
     for row in income_rows {
         let date = row.date.format("%Y-%m-%d").to_string();
         if is_date_in_period(&date, period) {
-            total += convert_amount(row.amount, row.currency, display_currency, rates);
+            total += i64::from(convert_amount(row.amount, row.currency, display_currency, rates));
             count += 1;
         }
     }
@@ -235,13 +235,13 @@ fn sum_expenses_in_period(
     period: &PayPeriod,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
-) -> (i32, i32) {
-    let mut total = 0i32;
+) -> (i64, i32) {
+    let mut total = 0i64;
     let mut count = 0i32;
     for (row, _) in expenses {
         let date = row.date.format("%Y-%m-%d").to_string();
         if is_date_in_period(&date, period) {
-            total += convert_amount(row.amount, row.currency, display_currency, rates);
+            total += i64::from(convert_amount(row.amount, row.currency, display_currency, rates));
             count += 1;
         }
     }
@@ -258,23 +258,14 @@ pub fn compute_kpis(
     day_count: i64,
 ) -> ReportKpis {
     let period = pay_period(from, to);
-    let chart = build_chart_summary(expenses, from, to, display_currency, rates);
-    let total_expenses: i32 = chart.by_tag.iter().map(|entry| entry.amount).sum();
-    let expense_count = expenses
-        .iter()
-        .filter(|(row, _)| {
-            let date = row.date.format("%Y-%m-%d").to_string();
-            is_date_in_period(&date, &period)
-        })
-        .count() as i32;
+    // Each expense counted exactly once (summing per-tag totals would double-count multi-tag
+    // expenses and drop untagged ones).
+    let (total_expenses, expense_count) =
+        sum_expenses_in_period(expenses, &period, display_currency, rates);
     let (total_income, income_count) =
         sum_income_in_period(income_rows, &period, display_currency, rates);
     let extra_spent = compute_extra_spent(expenses, &period, display_currency, rates);
-    let avg_daily_spend = if day_count > 0 {
-        total_expenses / i32::try_from(day_count).unwrap_or(1)
-    } else {
-        0
-    };
+    let avg_daily_spend = if day_count > 0 { total_expenses / day_count } else { 0 };
 
     ReportKpis {
         total_income,

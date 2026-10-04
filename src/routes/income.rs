@@ -1,4 +1,6 @@
 use axum::extract::{Path, State};
+use crate::routes::helpers::finish_write;
+use crate::services::projection_history::HistorySync;
 use axum::Json;
 use uuid::Uuid;
 
@@ -59,16 +61,14 @@ pub async fn create_income(
         account_id,
     )
     .await?;
-    state
-        .cache
-        .invalidate(InvalidationScope::IncomeChange, user.sub).await;
     // A past-dated income entry must be reflected in the frozen projection history aggregates.
-    crate::services::projection_history::refresh_history_for_date(
-        &state.db_pool,
+    finish_write(
+        &state,
         user.sub,
-        &body.date,
+        InvalidationScope::IncomeChange,
+        Some(HistorySync::From(row.date)),
     )
-    .await?;
+    .await;
     Ok(Json(row.into()))
 }
 
@@ -127,18 +127,15 @@ pub async fn update_income(
             .ok_or(ApiError::NotFound)?
     };
 
-    state
-        .cache
-        .invalidate(InvalidationScope::IncomeChange, user.sub).await;
-    // The date may have moved (manual edit). Trigger on the earlier of the old/new date: a
-    // full reinit rebuilds every past period, so one past-dated trigger covers both.
-    let refresh_date = existing.date.min(row.date).format("%Y-%m-%d").to_string();
-    crate::services::projection_history::refresh_history_for_date(
-        &state.db_pool,
+    // The date may have moved (manual edit). Re-freezing from the earlier of the old/new date
+    // recomputes every period after it, so one trigger covers both.
+    finish_write(
+        &state,
         user.sub,
-        &refresh_date,
+        InvalidationScope::IncomeChange,
+        Some(HistorySync::From(existing.date.min(row.date))),
     )
-    .await?;
+    .await;
     Ok(Json(row.into()))
 }
 
@@ -159,14 +156,12 @@ pub async fn delete_income(
         income_repo::soft_delete(&state.db_pool, user.sub, id).await?;
     }
 
-    state
-        .cache
-        .invalidate(InvalidationScope::IncomeChange, user.sub).await;
-    crate::services::projection_history::refresh_history_for_date(
-        &state.db_pool,
+    finish_write(
+        &state,
         user.sub,
-        &existing.date.format("%Y-%m-%d").to_string(),
+        InvalidationScope::IncomeChange,
+        Some(HistorySync::From(existing.date)),
     )
-    .await?;
+    .await;
     Ok(Json(serde_json::json!({ "success": true })))
 }

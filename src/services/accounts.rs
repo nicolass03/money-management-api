@@ -23,7 +23,7 @@ pub async fn compute_balances(
     user_id: Uuid,
     accounts_list: &[AccountRow],
     as_of: NaiveDate,
-) -> Result<HashMap<Uuid, i32>, ApiError> {
+) -> Result<HashMap<Uuid, i64>, ApiError> {
     let start_date: Option<NaiveDate> = user_settings::table
         .filter(user_settings::user_id.eq(user_id))
         .select(user_settings::projection_start_date)
@@ -71,10 +71,10 @@ pub async fn compute_balances(
     Ok(accounts_list
         .iter()
         .map(|account| {
-            let balance = account.initial_amount as i64
+            let balance = i64::from(account.initial_amount)
                 + income_map.get(&account.id).copied().unwrap_or(0)
                 - expense_map.get(&account.id).copied().unwrap_or(0);
-            (account.id, balance.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+            (account.id, balance)
         })
         .collect())
 }
@@ -84,7 +84,7 @@ pub async fn compute_balances(
 /// balance. Returns `None` when no matching-currency account can cover the charge.
 pub fn pick_funded_account(
     accounts_list: &[AccountRow],
-    balances: &HashMap<Uuid, i32>,
+    balances: &HashMap<Uuid, i64>,
     currency: CurrencyCode,
     min_amount: i32,
 ) -> Option<Uuid> {
@@ -92,7 +92,7 @@ pub fn pick_funded_account(
         .iter()
         .filter(|a| a.currency == currency)
         .filter_map(|a| balances.get(&a.id).map(|b| (a.id, *b)))
-        .filter(|(_, balance)| *balance >= min_amount)
+        .filter(|(_, balance)| *balance >= i64::from(min_amount))
         .max_by_key(|(_, balance)| *balance)
         .map(|(id, _)| id)
 }
@@ -102,7 +102,7 @@ pub fn pick_funded_account(
 /// charge — the charge is allowed to drive it negative.
 pub fn pick_richest_account(
     accounts_list: &[AccountRow],
-    balances: &HashMap<Uuid, i32>,
+    balances: &HashMap<Uuid, i64>,
     currency: CurrencyCode,
 ) -> Option<Uuid> {
     accounts_list
@@ -119,7 +119,7 @@ pub fn pick_richest_account(
 /// amount into the chosen account's currency.
 pub fn pick_richest_any_currency(
     accounts_list: &[AccountRow],
-    balances: &HashMap<Uuid, i32>,
+    balances: &HashMap<Uuid, i64>,
 ) -> Option<AccountRow> {
     accounts_list
         .iter()

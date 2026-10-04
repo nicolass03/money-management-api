@@ -77,37 +77,32 @@ pub struct ProjectionRow {
     pub pay_date: String,
     pub start_date: String,
     pub end_date: String,
-    pub income_total: i32,
-    pub expense_total: i32,
-    pub period_free: i32,
-    pub cumulative_free: i32,
+    pub income_total: i64,
+    pub expense_total: i64,
+    pub period_free: i64,
+    pub cumulative_free: i64,
     pub expense_items: Vec<ProjectionExpenseItem>,
     pub is_past: bool,
 }
 
-struct BuildProjectionInput<'a> {
-    primary_schedule: &'a IncomePayScheduleRow,
-    schedules: &'a [IncomePayScheduleRow],
-    income_entries: &'a [IncomeRow],
-    expenses: &'a [(ExpenseRow, Vec<String>)],
-    recurring_expenses: &'a [(RecurringExpenseRow, Vec<String>)],
-    planned_expenses: &'a [(PlannedExpenseRow, Vec<String>)],
-    budgets: &'a [(BudgetRow, Vec<String>, i32)],
-    display_currency: CurrencyCode,
-    rates: &'a ExchangeRates,
-    initial_free_money: i32,
-    projection_start_date: Option<&'a str>,
-    projection_end_date: Option<&'a str>,
-    today: &'a str,
-}
-
-fn to_display(
-    amount: i32,
-    currency: CurrencyCode,
-    display_currency: CurrencyCode,
-    rates: &ExchangeRates,
-) -> i32 {
-    convert_amount(amount, currency, display_currency, rates)
+/// Everything the projection kernel needs for one user, loaded once (see
+/// `projection_history::load_projection_inputs`). Both the live read path and the history freezer
+/// build from this, so they can never disagree on inputs such as the opening balance.
+pub struct ProjectionInputs {
+    pub primary_schedule: IncomePayScheduleRow,
+    pub schedules: Vec<IncomePayScheduleRow>,
+    /// Includes soft-deleted tombstones (they block re-projecting a deleted occurrence).
+    pub income_all: Vec<IncomeRow>,
+    pub expenses: Vec<(ExpenseRow, Vec<String>)>,
+    pub recurring: Vec<(RecurringExpenseRow, Vec<String>)>,
+    pub planned: Vec<(PlannedExpenseRow, Vec<String>)>,
+    pub budgets: Vec<(BudgetRow, Vec<String>, i32)>,
+    pub display_currency: CurrencyCode,
+    pub rates: ExchangeRates,
+    /// Opening balance: Σ every account's (active + archived) initial amount in display currency.
+    pub initial_free_money: i64,
+    pub projection_start_date: Option<NaiveDate>,
+    pub projection_end_date: Option<NaiveDate>,
 }
 
 fn is_on_or_after_start_date(date: &str, start_date: Option<&str>) -> bool {
@@ -123,24 +118,18 @@ fn effective_period_start(period: &PayPeriod, projection_start_date: Option<&str
     period.start_date.clone()
 }
 
+/// Persisted (non-deleted) income dated inside `period`, in display currency.
 fn sum_income_in_period(
     entries: &[IncomeRow],
     period: &PayPeriod,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
-    min_date: Option<&str>,
-    max_date: Option<&str>,
-) -> i32 {
+) -> i64 {
     entries
         .iter()
         .filter(|entry| entry.deleted_at.is_none())
-        .filter(|entry| {
-            let date = entry.date.format("%Y-%m-%d").to_string();
-            is_date_in_period(&date, period)
-                && is_on_or_after_start_date(&date, min_date)
-                && max_date.is_none_or(|max| date.as_str() <= max)
-        })
-        .map(|entry| to_display(entry.amount, entry.currency, display_currency, rates))
+        .filter(|entry| is_date_in_period(&entry.date.format("%Y-%m-%d").to_string(), period))
+        .map(|entry| i64::from(convert_amount(entry.amount, entry.currency, display_currency, rates)))
         .sum()
 }
 
@@ -165,7 +154,7 @@ fn projected_income_in_period(
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
     today: &str,
-) -> i32 {
+) -> i64 {
     let mut total = 0;
     for schedule in schedules {
         let input = schedule_from_income(schedule);
@@ -179,72 +168,54 @@ fn projected_income_in_period(
             if materialized.contains(&(schedule.id, date)) {
                 continue;
             }
-            total += to_display(schedule.amount, schedule.currency, display_currency, rates);
+            total += i64::from(convert_amount(
+                schedule.amount,
+                schedule.currency,
+                display_currency,
+                rates,
+            ));
         }
     }
     total
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Builds projection rows for the primary schedule's periods overlapping
+/// `[projection_start_date, projection_end_date]`, carrying a running balance seeded with
+/// `opening_balance`. When the start falls mid-period, that opening period runs on the opening
+/// balance alone (see the comments below).
 pub fn build_projection_rows(
-    primary_schedule: &IncomePayScheduleRow,
-    schedules: &[IncomePayScheduleRow],
-    income_entries: &[IncomeRow],
-    expenses: &[(ExpenseRow, Vec<String>)],
-    recurring_expenses: &[(RecurringExpenseRow, Vec<String>)],
-    planned_expenses: &[(PlannedExpenseRow, Vec<String>)],
-    budgets: &[(BudgetRow, Vec<String>, i32)],
-    display_currency: CurrencyCode,
-    rates: &ExchangeRates,
-    initial_free_money: i32,
+    inputs: &ProjectionInputs,
+    opening_balance: i64,
     projection_start_date: Option<&str>,
     projection_end_date: Option<&str>,
     today: &str,
 ) -> Vec<ProjectionRow> {
-    let input = BuildProjectionInput {
-        primary_schedule,
-        schedules,
-        income_entries,
-        expenses,
-        recurring_expenses,
-        planned_expenses,
-        budgets,
-        display_currency,
-        rates,
-        initial_free_money,
-        projection_start_date,
-        projection_end_date,
-        today,
-    };
-
-    build_projection_rows_inner(input)
-}
-
-fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<ProjectionRow> {
-    let schedule = schedule_from_income(input.primary_schedule);
+    let schedule = schedule_from_income(&inputs.primary_schedule);
     let periods = get_projection_periods(
         &schedule,
-        Some(input.today),
-        input.projection_start_date,
-        input.projection_end_date,
+        Some(today),
+        projection_start_date,
+        projection_end_date,
     );
 
-    let expense_list = to_expense_with_tags(input.expenses);
-    let recurring_list = to_recurring_with_tags(input.recurring_expenses);
-    let planned_list = to_planned_with_tags(input.planned_expenses);
-    let budget_list = to_budget_with_tags(input.budgets);
+    let expense_list = to_expense_with_tags(&inputs.expenses);
+    let recurring_list = to_recurring_with_tags(&inputs.recurring);
+    let planned_list = to_planned_with_tags(&inputs.planned);
+    let budget_list = to_budget_with_tags(&inputs.budgets);
+    let display_currency = inputs.display_currency;
+    let rates = &inputs.rates;
 
-    let mut running_balance = input.initial_free_money;
+    let mut running_balance = opening_balance;
     let materialized = build_expense_period_materialized(&expense_list, &budget_list);
-    let scheduled_keys = scheduled_income_keys(input.income_entries);
+    let scheduled_keys = scheduled_income_keys(&inputs.income_all);
 
     periods
         .into_iter()
         .map(|period| {
-            let is_past = period.pay_date.as_str() < input.today;
+            let is_past = period.pay_date.as_str() < today;
             // For the opening period (projection starts mid-period) this is the projection start
             // date, so only expenses dated on or after it count.
-            let period_start_date = effective_period_start(&period, input.projection_start_date);
+            let period_start_date = effective_period_start(&period, projection_start_date);
             // The opening period runs on the accounts' starting balance alone: no salary until the
             // next pay date, and its "free" shows that starting balance.
             let is_opening = period_start_date != period.start_date;
@@ -252,21 +223,15 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
             let income_total = if is_opening {
                 0
             } else {
-                sum_income_in_period(
-                    input.income_entries,
-                    &period,
-                    input.display_currency,
-                    input.rates,
-                    Some(&period.start_date),
-                    None,
-                ) + projected_income_in_period(
-                    input.schedules,
-                    &period,
-                    &scheduled_keys,
-                    input.display_currency,
-                    input.rates,
-                    input.today,
-                )
+                sum_income_in_period(&inputs.income_all, &period, display_currency, rates)
+                    + projected_income_in_period(
+                        &inputs.schedules,
+                        &period,
+                        &scheduled_keys,
+                        display_currency,
+                        rates,
+                        today,
+                    )
             };
 
             let expense_items = get_expense_items_in_period(
@@ -274,9 +239,9 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
                 &recurring_list,
                 &planned_list,
                 &period,
-                input.display_currency,
-                input.rates,
-                input.today,
+                display_currency,
+                rates,
+                today,
                 &budget_list,
                 &materialized,
                 GetExpenseItemsOptions {
@@ -288,10 +253,13 @@ fn build_projection_rows_inner(input: BuildProjectionInput<'_>) -> Vec<Projectio
             .filter(|item| is_on_or_after_start_date(&item.date, Some(&period_start_date)))
             .collect::<Vec<_>>();
 
-            let expense_total: i32 = expense_items.iter().map(|item| item.converted_amount).sum();
+            let expense_total: i64 = expense_items
+                .iter()
+                .map(|item| i64::from(item.converted_amount))
+                .sum();
             running_balance += income_total - expense_total;
             let period_free = if is_opening {
-                input.initial_free_money
+                opening_balance
             } else {
                 income_total - expense_total
             };
@@ -359,21 +327,21 @@ mod tests {
     }
 
     fn build(schedule: &IncomePayScheduleRow, income: &[IncomeRow]) -> Vec<ProjectionRow> {
-        build_projection_rows(
-            schedule,
-            std::slice::from_ref(schedule),
-            income,
-            &[],
-            &[],
-            &[],
-            &[],
-            CurrencyCode::Usd,
-            &empty_rates(),
-            0,
-            None,
-            None,
-            "2026-06-01",
-        )
+        let inputs = ProjectionInputs {
+            primary_schedule: schedule.clone(),
+            schedules: vec![schedule.clone()],
+            income_all: income.to_vec(),
+            expenses: Vec::new(),
+            recurring: Vec::new(),
+            planned: Vec::new(),
+            budgets: Vec::new(),
+            display_currency: CurrencyCode::Usd,
+            rates: empty_rates(),
+            initial_free_money: 0,
+            projection_start_date: None,
+            projection_end_date: None,
+        };
+        build_projection_rows(&inputs, 0, None, None, "2026-06-01")
     }
 
     #[test]

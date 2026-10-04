@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::routes::helpers::{expense_history_date, finish_write};
+use crate::services::projection_history::HistorySync;
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use uuid::Uuid;
@@ -110,16 +112,14 @@ pub async fn create_expense(
         account_id,
     )
     .await?;
-    state
-        .cache
-        .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
     // A past-dated expense must be reflected in the frozen projection history aggregates.
-    crate::services::projection_history::refresh_history_for_date(
-        &state.db_pool,
+    finish_write(
+        &state,
         user.sub,
-        &body.date,
+        InvalidationScope::ExpenseChange,
+        Some(HistorySync::From(row.date)),
     )
-    .await?;
+    .await;
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -147,15 +147,13 @@ pub async fn patch_expense(
     let (_, tags) = expenses_repo::find_with_tags(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    state
-        .cache
-        .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
-    crate::services::projection_history::refresh_history_for_date(
-        &state.db_pool,
+    finish_write(
+        &state,
         user.sub,
-        &row.date.format("%Y-%m-%d").to_string(),
+        InvalidationScope::ExpenseChange,
+        Some(HistorySync::From(expense_history_date(&state, user.sub, &row).await)),
     )
-    .await?;
+    .await;
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -173,15 +171,13 @@ pub async fn delete_expense(
         ));
     }
     expenses_repo::delete(&state.db_pool, user.sub, id).await?;
-    state
-        .cache
-        .invalidate(InvalidationScope::ExpenseChange, user.sub).await;
-    crate::services::projection_history::refresh_history_for_date(
-        &state.db_pool,
+    finish_write(
+        &state,
         user.sub,
-        &existing.date.format("%Y-%m-%d").to_string(),
+        InvalidationScope::ExpenseChange,
+        Some(HistorySync::From(expense_history_date(&state, user.sub, &existing).await)),
     )
-    .await?;
+    .await;
     Ok(Json(serde_json::json!({ "success": true })))
 }
 

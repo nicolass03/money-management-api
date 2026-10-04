@@ -34,8 +34,16 @@ pub async fn charge_due_income_for_date(
         .map_err(|_| ApiError::BadRequest("invalid date".into()))?;
     let mut created = 0;
 
+    // One connection for the whole per-user run instead of a checkout (and RLS round-trip) per
+    // schedule.
+    let mut conn = connection::user_connection(pool, user_id).await?;
     for schedule in schedules {
         if materialized_ids.contains(&schedule.id) {
+            continue;
+        }
+        // Like recurring expenses: no occurrence before the schedule was last saved, so catching
+        // up on missed days never backfills history.
+        if due_date < schedule.updated_at.date_naive() {
             continue;
         }
 
@@ -45,7 +53,6 @@ pub async fn charge_due_income_for_date(
             continue;
         }
 
-        let mut conn = connection::user_connection(pool, user_id).await?;
         let insert_result = income_repo::insert_scheduled(
             &mut conn,
             user_id,
@@ -72,7 +79,6 @@ pub async fn charge_due_income_for_date(
     }
 
     if created > 0 {
-        let mut conn = connection::user_connection(pool, user_id).await?;
         settings_repo::bump_cache_revision(&mut conn, user_id).await?;
     }
 

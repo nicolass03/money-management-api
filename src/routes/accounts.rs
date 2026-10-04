@@ -1,4 +1,6 @@
 use axum::extract::{Path, State};
+use crate::routes::helpers::finish_write;
+use crate::services::projection_history::HistorySync;
 use axum::Json;
 use uuid::Uuid;
 
@@ -36,11 +38,13 @@ async fn list_with_balances(
 /// the sum of account starting balances, so any account create/edit/archive changes every frozen
 /// cumulative value. Mirrors the settings patch path.
 async fn after_account_change(state: &AppState, user_id: Uuid) -> Result<(), ApiError> {
-    state
-        .cache
-        .invalidate(InvalidationScope::AccountChange, user_id)
-        .await;
-    crate::services::projection_history::reinitialize_history(&state.db_pool, user_id).await?;
+    finish_write(
+        state,
+        user_id,
+        InvalidationScope::AccountChange,
+        Some(HistorySync::Rebuild),
+    )
+    .await;
     Ok(())
 }
 
@@ -70,7 +74,7 @@ pub async fn create_account(
     .await?;
     after_account_change(&state, user.sub).await?;
     // A brand-new account has no activity yet, so balance == initial amount.
-    Ok(Json(account_to_response(row, initial_amount)))
+    Ok(Json(account_to_response(row, i64::from(initial_amount))))
 }
 
 pub async fn update_account(

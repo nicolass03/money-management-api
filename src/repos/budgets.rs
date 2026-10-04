@@ -36,7 +36,8 @@ async fn spent_by_budget_ids(
 
     for (budget_id, spent) in rows {
         if let Some(id) = budget_id {
-            map.insert(id, i32::try_from(spent).unwrap_or(0));
+            // Saturate rather than silently reporting 0 spent on (implausible) overflow.
+            map.insert(id, i32::try_from(spent).unwrap_or(i32::MAX));
         }
     }
     Ok(map)
@@ -237,6 +238,7 @@ pub async fn create_budget_expense(
     amount: i32,
     currency: CurrencyCode,
     date: chrono::NaiveDate,
+    account_id: Option<Uuid>,
 ) -> Result<crate::models::ExpenseRow, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -263,7 +265,7 @@ pub async fn create_budget_expense(
                         recurring_id: None,
                         planned_expense_id: None,
                         budget_id: Some(budget_id),
-                        account_id: None,
+                        account_id,
                         amount_overridden: false,
                         is_subscription: false,
                         created_at: now,
@@ -278,6 +280,16 @@ pub async fn create_budget_expense(
         .await?;
 
     Ok(result)
+}
+
+/// Date of the budget's earliest recorded expense, if any.
+pub async fn earliest_expense_date_for(
+    pool: &DbPool,
+    user_id: Uuid,
+    budget_id: Uuid,
+) -> Result<Option<NaiveDate>, ApiError> {
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    earliest_expense_date(&mut conn, user_id, budget_id).await
 }
 
 async fn earliest_expense_date(
@@ -365,14 +377,14 @@ pub async fn delete_budget_expense(
     user_id: Uuid,
     budget_id: Uuid,
     expense_id: Uuid,
-) -> Result<bool, ApiError> {
+) -> Result<Option<crate::models::ExpenseRow>, ApiError> {
     let existing = expenses::find_by_id(pool, user_id, expense_id).await?;
     let Some(expense) = existing else {
-        return Ok(false);
+        return Ok(None);
     };
     if expense.budget_id != Some(budget_id) {
-        return Ok(false);
+        return Ok(None);
     }
     expenses::delete(pool, user_id, expense_id).await?;
-    Ok(true)
+    Ok(Some(expense))
 }

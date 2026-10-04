@@ -1,12 +1,14 @@
 use chrono::NaiveDate;
 use uuid::Uuid;
 
+use crate::cache::InvalidationScope;
 use crate::error::ApiError;
-use crate::models::CurrencyCode;
-use crate::repos::{accounts, connection, income_schedules, settings};
+use crate::models::{CurrencyCode, ExpenseRow};
+use crate::repos::{accounts, budgets, connection, income_schedules, settings};
 use crate::services::accounts::{compute_balances, pick_funded_account, pick_richest_account};
 use crate::services::pay_periods::{get_period_containing, schedule_from_income, PayPeriod};
-use crate::state::DbPool;
+use crate::services::projection_history::{self, HistorySync};
+use crate::state::{AppState, DbPool};
 
 /// Validates an optional account selection and resolves the currency a row should be stored in.
 /// When an account is given it must belong to the user and be active; the row's currency then
@@ -94,4 +96,53 @@ pub async fn get_current_pay_period(
         &schedule_from_income(&schedule),
         &today,
     )))
+}
+
+/// Finishes a committed write: re-freezes the projection history the write may have touched, then
+/// invalidates the user's caches. History goes first so a projection read racing the write can't
+/// cache stale frozen rows under the new revision — the invalidation evicts anything cached in
+/// between. A failed re-freeze doesn't fail the (already committed) write: the frozen rows are
+/// dropped instead, so projections fall back to a full live computation until the daily job
+/// freezes them again, rather than serving stale aggregates.
+pub async fn finish_write(
+    state: &AppState,
+    user_id: Uuid,
+    scope: InvalidationScope,
+    history: Option<HistorySync>,
+) {
+    let refreshed = match history {
+        None => Ok(()),
+        Some(HistorySync::From(date)) => {
+            projection_history::refresh_history_for_date(&state.db_pool, user_id, date).await
+        }
+        Some(sync) => projection_history::sync_history(&state.db_pool, user_id, sync, false)
+            .await
+            .map(|_| ()),
+    };
+    if let Err(error) = refreshed {
+        tracing::error!(%user_id, %error, "projection history refresh failed; clearing frozen rows");
+        if let Err(error) = projection_history::clear_history(&state.db_pool, user_id).await {
+            tracing::error!(%user_id, %error, "clearing projection history failed");
+        }
+    }
+    state.cache.invalidate(scope, user_id).await;
+}
+
+/// Earliest date whose projection period an expense affects, for re-freezing history: its own date,
+/// or — for spend against a dated budget, which projections show as the budget's line on its end
+/// date — the earlier of that and the budget's end date. If the budget can't be read, falls back to
+/// the earliest possible date (a full re-freeze) rather than risk leaving frozen rows stale.
+pub async fn expense_history_date(state: &AppState, user_id: Uuid, expense: &ExpenseRow) -> NaiveDate {
+    let Some(budget_id) = expense.budget_id else {
+        return expense.date;
+    };
+    match budgets::find_by_id(&state.db_pool, user_id, budget_id).await {
+        Ok(budget) => budget
+            .and_then(|budget| budget.end_date)
+            .map_or(expense.date, |end| end.min(expense.date)),
+        Err(error) => {
+            tracing::error!(%user_id, %error, "budget lookup for history refresh failed");
+            NaiveDate::MIN
+        }
+    }
 }

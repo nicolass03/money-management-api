@@ -14,12 +14,19 @@ pub async fn list_all(
     user_id: Uuid,
 ) -> Result<Vec<IncomePayScheduleRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
+    list_all_with_conn(&mut conn, user_id).await
+}
+
+pub async fn list_all_with_conn(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+) -> Result<Vec<IncomePayScheduleRow>, ApiError> {
     income_pay_schedules::table
         .filter(income_pay_schedules::user_id.eq(user_id))
         .filter(income_pay_schedules::deleted_at.is_null())
         .order(income_pay_schedules::name.asc())
         .select(IncomePayScheduleRow::as_select())
-        .load(&mut conn)
+        .load(conn)
         .await
         .map_err(ApiError::from)
 }

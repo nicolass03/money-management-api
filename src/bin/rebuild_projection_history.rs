@@ -2,10 +2,10 @@
 //!
 //! Existing frozen rows were computed with the old projection seed that double-counted the opening
 //! balance — accounts' initial amounts PLUS the now-removed `user_settings.projection_initial_free_money`.
-//! The seed is now accounts-only (see `services::projection_history::load_projection_inputs` and
-//! `cache::loader`), but `ensure_history` only *appends* newly-closed periods, so already-frozen
+//! The seed is now accounts-only (see `services::projection_history::load_projection_inputs`, shared by
+//! `cache::loader`), but the daily job only *appends* newly-closed periods, so already-frozen
 //! rows keep their stale (doubled) `cumulative`. This binary deletes each user's frozen rows and
-//! re-freezes them from scratch with the corrected seed (`replace: true`).
+//! re-freezes them from scratch with the corrected seed (`HistorySync::Rebuild`).
 //!
 //! Usage (from the crate root, with the same `.env` / `DATABASE_URL` the server uses):
 //!   cargo run --bin rebuild_projection_history                # rebuild every user
@@ -17,7 +17,7 @@
 
 use money_management_api::config::Config;
 use money_management_api::repos::users;
-use money_management_api::services::projection_history::{sync_history, SyncOptions};
+use money_management_api::services::projection_history::{sync_history, HistorySync};
 use money_management_api::state::AppState;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut total_inserted = 0usize;
     let mut failures = 0usize;
     for user_id in user_ids {
-        match sync_history(&pool, user_id, SyncOptions { replace: true, dry_run }).await {
+        match sync_history(&pool, user_id, HistorySync::Rebuild, dry_run).await {
             Ok(report) => {
                 tracing::info!(
                     %user_id,

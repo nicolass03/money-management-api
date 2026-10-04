@@ -1,0 +1,5 @@
+ALTER TABLE projection_history
+    ALTER COLUMN income TYPE INTEGER,
+    ALTER COLUMN planned_spent TYPE INTEGER,
+    ALTER COLUMN free TYPE INTEGER,
+    ALTER COLUMN cumulative TYPE INTEGER;
