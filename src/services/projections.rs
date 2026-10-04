@@ -54,15 +54,16 @@ pub struct ProjectionExpenseItem {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-/// Sort expense rows for list display. Projections use chronological date; the expenses tab uses
-/// newest `created_at` first.
+/// Sort expense rows for list display. Projections use chronological date; the expenses tab lists
+/// recorded expenses newest date first (entry time only breaks ties within a day, so back-dated
+/// entries land on their own date), followed by projected/summary rows.
 pub(crate) fn sort_projection_expense_items(
     items: &mut [ProjectionExpenseItem],
     sort: ExpenseItemSort,
 ) {
     match sort {
-        ExpenseItemSort::CreatedAtDesc => items.sort_by(|a, b| match (&a.created_at, &b.created_at) {
-            (Some(a_ts), Some(b_ts)) => b_ts.cmp(a_ts),
+        ExpenseItemSort::DateDesc => items.sort_by(|a, b| match (&a.created_at, &b.created_at) {
+            (Some(a_ts), Some(b_ts)) => b.date.cmp(&a.date).then_with(|| b_ts.cmp(a_ts)),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => b.date.cmp(&a.date),

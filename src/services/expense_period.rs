@@ -126,8 +126,8 @@ pub(crate) struct GetExpenseItemsOptions {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ExpenseItemSort {
-    /// Expenses tab: newest materialized row first.
-    CreatedAtDesc,
+    /// Expenses tab: recorded rows by newest date (entry time breaks same-day ties).
+    DateDesc,
     /// Projections tab: chronological by charge date.
     DateAsc,
 }
@@ -196,7 +196,7 @@ pub fn build_expense_period_view(
             &materialized,
             GetExpenseItemsOptions {
                 include_budget_summaries: true,
-                sort: ExpenseItemSort::CreatedAtDesc,
+                sort: ExpenseItemSort::DateDesc,
             },
         )
     } else {
@@ -207,7 +207,7 @@ pub fn build_expense_period_view(
             &period.end_date,
             display_currency,
             rates,
-            ExpenseItemSort::CreatedAtDesc,
+            ExpenseItemSort::DateDesc,
         )
     };
 
