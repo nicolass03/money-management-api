@@ -35,13 +35,20 @@ pub async fn ensure_user_exists(
 }
 
 pub async fn is_onboarding_complete(pool: &DbPool, user_id: Uuid) -> Result<bool, ApiError> {
-    let mut conn = connection::user_connection(pool, user_id).await?;
-    let completed_at: Option<DateTime<Utc>> = users::table
-        .find(user_id)
-        .select(users::onboarding_completed_at)
-        .first(&mut conn)
-        .await?;
-    Ok(completed_at.is_some())
+    let completed_at: Option<DateTime<Utc>> = {
+        let mut conn = connection::user_connection(pool, user_id).await?;
+        users::table
+            .find(user_id)
+            .select(users::onboarding_completed_at)
+            .first(&mut conn)
+            .await?
+    };
+    if completed_at.is_some() {
+        return Ok(true);
+    }
+
+    // Users created with a password (e.g. Supabase dashboard) skip the invite flow entirely.
+    mark_onboarded_if_password_set(pool, user_id).await
 }
 
 /// True when Supabase auth.users has a non-empty encrypted_password (invite accepted + password set).
@@ -61,10 +68,18 @@ pub async fn has_auth_password(pool: &DbPool, user_id: Uuid) -> Result<bool, Api
 }
 
 pub async fn complete_onboarding(pool: &DbPool, user_id: Uuid) -> Result<(), ApiError> {
-    if !has_auth_password(pool, user_id).await? {
+    if !mark_onboarded_if_password_set(pool, user_id).await? {
         return Err(ApiError::BadRequest(
             "password must be set before completing onboarding".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Stamps `onboarding_completed_at` when the auth user has a password; returns whether it did.
+async fn mark_onboarded_if_password_set(pool: &DbPool, user_id: Uuid) -> Result<bool, ApiError> {
+    if !has_auth_password(pool, user_id).await? {
+        return Ok(false);
     }
 
     let mut conn = connection::user_connection(pool, user_id).await?;
@@ -72,7 +87,7 @@ pub async fn complete_onboarding(pool: &DbPool, user_id: Uuid) -> Result<(), Api
         .set(users::onboarding_completed_at.eq(Some(Utc::now())))
         .execute(&mut conn)
         .await?;
-    Ok(())
+    Ok(true)
 }
 
 pub async fn list_user_ids(pool: &DbPool) -> Result<Vec<Uuid>, ApiError> {
