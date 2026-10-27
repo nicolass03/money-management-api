@@ -190,6 +190,54 @@ pub async fn insert_scheduled(
         .await
 }
 
+/// Inserts one day's interest credit for an account (daily job), in the account's currency.
+/// `ON CONFLICT DO NOTHING` against the `(account_id, date)` interest index backs up the job's
+/// cursor. Returns whether a row was inserted.
+pub async fn insert_interest(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+    account_id: Uuid,
+    currency: CurrencyCode,
+    date: NaiveDate,
+    amount: i32,
+    created_at: chrono::DateTime<Utc>,
+) -> Result<bool, diesel::result::Error> {
+    let inserted = diesel::insert_into(income::table)
+        .values((
+            income::user_id.eq(user_id),
+            income::name.eq("interest"),
+            income::amount.eq(amount),
+            income::currency.eq(currency),
+            income::source.eq(IncomeSource::Interest),
+            income::date.eq(date),
+            income::account_id.eq(account_id),
+            income::created_at.eq(created_at),
+        ))
+        .on_conflict_do_nothing()
+        .execute(conn)
+        .await?;
+    Ok(inserted > 0)
+}
+
+/// An account's daily interest credits as `(date, amount)`, newest first.
+pub async fn list_interest(
+    pool: &DbPool,
+    user_id: Uuid,
+    account_id: Uuid,
+) -> Result<Vec<(NaiveDate, i32)>, ApiError> {
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    income::table
+        .filter(income::user_id.eq(user_id))
+        .filter(income::account_id.eq(account_id))
+        .filter(income::source.eq(IncomeSource::Interest))
+        .filter(income::deleted_at.is_null())
+        .order(income::date.desc())
+        .select((income::date, income::amount))
+        .load(&mut conn)
+        .await
+        .map_err(ApiError::from)
+}
+
 /// Schedule ids that already have a materialized income row on `date` — including
 /// soft-deleted tombstones — so the cron never re-creates a deleted occurrence.
 pub async fn get_materialized_schedule_ids_for_date(

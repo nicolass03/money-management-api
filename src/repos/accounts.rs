@@ -1,13 +1,24 @@
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::models::{AccountRow, CurrencyCode};
+use crate::models::{AccountRow, CurrencyCode, InterestRateType};
 use crate::repos::{connection, settings};
 use crate::schema::accounts;
 use crate::state::DbPool;
+
+/// An account's user-set interest fields: the insert values and the edit changeset.
+/// `interest_accrued_through` is the daily job's cursor; it must be set whenever the rate is above
+/// 0 (a DB check), and the routes set it to the day interest is turned on so nothing is backfilled.
+#[derive(Debug, Insertable, AsChangeset)]
+#[diesel(table_name = accounts, treat_none_as_null = true)]
+pub struct AccountInterest {
+    pub interest_rate_bps: i32,
+    pub interest_rate_type: InterestRateType,
+    pub interest_accrued_through: Option<NaiveDate>,
+}
 
 /// Active (non-archived) accounts, ordered by creation. Used by the API list endpoint, the
 /// charge job's account picker, and the projection seed.
@@ -77,6 +88,7 @@ pub async fn create(
     currency: CurrencyCode,
     initial_amount: i32,
     exclude_from_projections: bool,
+    interest: &AccountInterest,
 ) -> Result<AccountRow, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -90,6 +102,7 @@ pub async fn create(
                     accounts::initial_amount.eq(initial_amount),
                     accounts::exclude_from_projections.eq(exclude_from_projections),
                     accounts::created_at.eq(now),
+                    interest,
                 ))
                 .returning(AccountRow::as_returning())
                 .get_result(conn)
@@ -105,7 +118,8 @@ pub async fn create(
 /// Updates the mutable fields of an account. Currency is intentionally NOT updatable: it is fixed
 /// at creation because existing expense/income rows are stored in the account's currency and are
 /// summed without conversion when deriving the balance — changing it would silently corrupt the
-/// balance. Only `name`, `initial_amount` and `exclude_from_projections` (when given) can change.
+/// balance. Only `name`, `initial_amount`, `exclude_from_projections` (when given) and the
+/// interest fields can change.
 pub async fn update(
     pool: &DbPool,
     user_id: Uuid,
@@ -113,6 +127,7 @@ pub async fn update(
     name: Option<&str>,
     initial_amount: i32,
     exclude_from_projections: Option<bool>,
+    interest: &AccountInterest,
 ) -> Result<Option<AccountRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     conn.transaction(|conn| {
@@ -126,6 +141,7 @@ pub async fn update(
                 accounts::name.eq(name),
                 accounts::initial_amount.eq(initial_amount),
                 exclude_from_projections.map(|exclude| accounts::exclude_from_projections.eq(exclude)),
+                interest,
             ))
             .returning(AccountRow::as_returning())
             .get_result(conn)
@@ -165,4 +181,30 @@ pub async fn archive(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<bool, Api
     })
     .await
     .map_err(ApiError::from)
+}
+
+/// Moves an account's daily interest cursor from `from` to `to` and stores the uncredited carry
+/// (daily job). Guarded on `from`, so it is a no-op when the cursor moved meanwhile (interest was
+/// turned off and on again). Returns whether it moved.
+pub async fn advance_interest(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+    id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+    carry_micros: i32,
+) -> Result<bool, diesel::result::Error> {
+    let updated = diesel::update(
+        accounts::table
+            .filter(accounts::user_id.eq(user_id))
+            .filter(accounts::id.eq(id))
+            .filter(accounts::interest_accrued_through.eq(from)),
+    )
+    .set((
+        accounts::interest_accrued_through.eq(to),
+        accounts::interest_carry_micros.eq(carry_micros),
+    ))
+    .execute(conn)
+    .await?;
+    Ok(updated > 0)
 }

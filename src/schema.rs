@@ -10,6 +10,10 @@ pub mod sql_types {
     pub struct IncomeSource;
 
     #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "interest_rate_type"))]
+    pub struct InterestRateType;
+
+    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "pay_frequency"))]
     pub struct PayFrequency;
 }
@@ -17,6 +21,7 @@ pub mod sql_types {
 diesel::table! {
     use diesel::sql_types::*;
     use super::sql_types::CurrencyCode;
+    use super::sql_types::InterestRateType;
 
     accounts (id) {
         id -> Uuid,
@@ -27,6 +32,10 @@ diesel::table! {
         archived_at -> Nullable<Timestamptz>,
         created_at -> Timestamptz,
         exclude_from_projections -> Bool,
+        interest_rate_bps -> Int4,
+        interest_rate_type -> InterestRateType,
+        interest_accrued_through -> Nullable<Date>,
+        interest_carry_micros -> Int4,
     }
 }
 

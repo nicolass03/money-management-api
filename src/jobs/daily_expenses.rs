@@ -10,6 +10,7 @@ use crate::cache::UserDataCache;
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::repos::{connection, users};
+use crate::services::accrue_interest::accrue_interest;
 use crate::services::charge_due_expenses::charge_due_expenses;
 use crate::services::charge_due_income::charge_due_income;
 use crate::services::charge_due_transfers::charge_due_transfers;
@@ -30,6 +31,7 @@ const CATCH_UP_DAYS: i64 = 6;
 /// Materializes due recurring transfers, recurring expenses and scheduled income for today and the
 /// `CATCH_UP_DAYS` before it (oldest first, so balance-based account picks see earlier charges).
 /// Income mirrors the recurring-expense flow: due occurrences become actual rows on their pay date.
+/// Daily account interest is credited last, on balances that already hold the day's other rows.
 pub async fn run_daily_expenses(
     pool: &DbPool,
     cache: Option<&UserDataCache>,
@@ -63,7 +65,14 @@ pub async fn run_daily_expenses(
                 tracing::error!(%user_id, %error, "charge due income failed");
                 0
             });
-        if expenses_created + income_created + transfers_created > 0 {
+        let interest_created = accrue_interest(pool, user_id, &dates)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(%user_id, %error, "accrue interest failed");
+                0
+            });
+        let materialized = transfers_created + expenses_created + income_created + interest_created;
+        if materialized > 0 {
             if let Some(cache) = cache {
                 cache.invalidate(user_id).await;
             }
@@ -85,7 +94,7 @@ pub async fn run_daily_expenses(
         // materialized rows into an already-frozen period, re-freeze from the oldest catch-up day.
         // Transfers count too: between an excluded and a projected account they move money in or
         // out of projections.
-        let sync = if expenses_created + income_created + transfers_created > 0 {
+        let sync = if materialized > 0 {
             HistorySync::From(today - chrono::Duration::days(CATCH_UP_DAYS))
         } else {
             HistorySync::Append
@@ -98,11 +107,7 @@ pub async fn run_daily_expenses(
             }
         };
 
-        created += transfers_created
-            + expenses_created
-            + income_created
-            + reminders_created
-            + history_created;
+        created += materialized + reminders_created + history_created;
     }
     Ok((today, created))
 }

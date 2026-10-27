@@ -113,6 +113,11 @@ pub struct CreateAccountRequest {
     pub initial_amount: i32,
     #[serde(default)]
     pub exclude_from_projections: bool,
+    /// Daily-credited interest in basis points (0 or absent = none).
+    #[serde(default)]
+    pub interest_rate_bps: i32,
+    /// How the bank quotes the rate (`apy`, `tae`, `tin`, `ea`, `namv`, `em`); absent = `apy`.
+    pub interest_rate_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +128,9 @@ pub struct UpdateAccountRequest {
     pub initial_amount: i32,
     /// Absent keeps the current value, so a client that predates the flag can't clear it.
     pub exclude_from_projections: Option<bool>,
+    /// Absent keeps the current value (like `exclude_from_projections`); 0 turns interest off.
+    pub interest_rate_bps: Option<i32>,
+    pub interest_rate_type: Option<String>,
 }
 
 /// Create / full edit of a transfer. `currency` is the currency the client parsed `amount` in; it

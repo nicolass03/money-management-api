@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::auth::extractor::AuthenticatedUser;
 use crate::dto::{CreateIncomeRequest, UpdateIncomeRequest};
 use crate::error::ApiError;
-use crate::models::{IncomeResponse, IncomeSource, is_manual_income};
+use crate::models::{IncomeResponse, IncomeRow, IncomeSource, is_manual_income};
 use crate::repos::income as income_repo;
 use crate::routes::helpers::{resolve_account, resolve_account_for_update};
 use crate::state::AppState;
@@ -28,6 +28,16 @@ fn validate_income(
     Ok((name, amount, currency, date))
 }
 
+/// Daily interest credits are read-only: the account owns them (`GET /accounts/{id}/interest`).
+fn reject_interest(row: &IncomeRow) -> Result<(), ApiError> {
+    if row.source == IncomeSource::Interest {
+        return Err(ApiError::BadRequest(
+            "interest is credited by its account and can't be changed".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn list_income(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
@@ -37,7 +47,15 @@ pub async fn list_income(
         .loader
         .income_list(user.sub, settings.cache_revision)
         .await?;
-    Ok(Json(rows.iter().cloned().map(Into::into).collect()))
+    // Daily interest would crowd the list; it is listed per account instead. The cached list keeps
+    // it, so reports still count it as income.
+    Ok(Json(
+        rows.iter()
+            .filter(|row| row.source != IncomeSource::Interest)
+            .cloned()
+            .map(Into::into)
+            .collect(),
+    ))
 }
 
 pub async fn create_income(
@@ -85,6 +103,7 @@ pub async fn update_income(
     let existing = income_repo::find_by_id(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    reject_interest(&existing)?;
 
     let row = if is_manual_income(&existing) {
         // Manual income: full edit (name, amount, currency, date).
@@ -134,6 +153,7 @@ pub async fn delete_income(
     let existing = income_repo::find_by_id(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    reject_interest(&existing)?;
 
     if is_manual_income(&existing) {
         // Manual income: hard delete.

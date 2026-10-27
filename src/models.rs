@@ -58,6 +58,36 @@ pub enum IncomeSource {
     Scheduled,
     #[db_rename = "manual"]
     Manual,
+    /// Daily interest the daily job credits to an interest-bearing account. Kept out of
+    /// `GET /income` (listed per account instead) and read-only.
+    #[db_rename = "interest"]
+    Interest,
+}
+
+/// The convention a bank quotes an account's interest rate in (see
+/// `services::accrue_interest::daily_rate` for how each converts to a daily rate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, DbEnum, Serialize)]
+#[ExistingTypePath = "sql_types::InterestRateType"]
+#[serde(rename_all = "lowercase")]
+pub enum InterestRateType {
+    /// Annual percentage yield / annual equivalent rate: effective annual.
+    #[db_rename = "apy"]
+    Apy,
+    /// Tasa anual equivalente (Spain): effective annual.
+    #[db_rename = "tae"]
+    Tae,
+    /// Tipo de interés nominal (Spain): nominal annual, paid daily.
+    #[db_rename = "tin"]
+    Tin,
+    /// Efectiva anual (Colombia): effective annual.
+    #[db_rename = "ea"]
+    Ea,
+    /// Nominal anual mes vencido (Colombia): nominal annual, compounded monthly.
+    #[db_rename = "namv"]
+    Namv,
+    /// Efectiva mensual (Colombia): effective monthly.
+    #[db_rename = "em"]
+    Em,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -88,6 +118,13 @@ pub struct AccountRow {
     pub created_at: DateTime<Utc>,
     /// Keeps the account's starting balance and rows out of projections.
     pub exclude_from_projections: bool,
+    /// Daily-credited interest rate in basis points; 0 = the account earns no interest.
+    pub interest_rate_bps: i32,
+    pub interest_rate_type: InterestRateType,
+    /// Last day the daily job credited interest for (set to the day interest was turned on).
+    pub interest_accrued_through: Option<NaiveDate>,
+    /// Accrued fraction of a minor unit not credited yet, in millionths.
+    pub interest_carry_micros: i32,
 }
 
 /// A transfer between two of the user's accounts. The selected columns are exactly the API shape
@@ -331,6 +368,8 @@ pub struct AccountResponse {
     pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub exclude_from_projections: bool,
+    pub interest_rate_bps: i32,
+    pub interest_rate_type: InterestRateType,
 }
 
 pub fn account_to_response(row: AccountRow, balance: i64) -> AccountResponse {
@@ -343,7 +382,18 @@ pub fn account_to_response(row: AccountRow, balance: i64) -> AccountResponse {
         archived_at: row.archived_at,
         created_at: row.created_at,
         exclude_from_projections: row.exclude_from_projections,
+        interest_rate_bps: row.interest_rate_bps,
+        interest_rate_type: row.interest_rate_type,
     }
+}
+
+/// One day's interest credited to an account (`GET /accounts/{id}/interest`), in the account's
+/// currency.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterestCreditResponse {
+    pub date: NaiveDate,
+    pub amount: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]

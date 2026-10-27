@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 
 use crate::error::ApiError;
-use crate::models::{CurrencyCode, PayFrequency};
+use crate::models::{CurrencyCode, InterestRateType, PayFrequency};
 
 pub const MAX_NAME_LEN: usize = 200;
 pub const MAX_TAG_LEN: usize = 50;
@@ -65,6 +65,26 @@ pub fn parse_pay_frequency(value: &str) -> Result<PayFrequency, ApiError> {
         "yearly" => Ok(PayFrequency::Yearly),
         _ => Err(ApiError::BadRequest("invalid frequency".into())),
     }
+}
+
+pub fn parse_interest_rate_type(value: &str) -> Result<InterestRateType, ApiError> {
+    match value.to_lowercase().as_str() {
+        "apy" => Ok(InterestRateType::Apy),
+        "tae" => Ok(InterestRateType::Tae),
+        "tin" => Ok(InterestRateType::Tin),
+        "ea" => Ok(InterestRateType::Ea),
+        "namv" => Ok(InterestRateType::Namv),
+        "em" => Ok(InterestRateType::Em),
+        _ => Err(ApiError::BadRequest("invalid interest rate type".into())),
+    }
+}
+
+/// Interest rate in basis points: 0 (no interest) through 10,000 (100%).
+pub fn require_interest_rate(bps: i32) -> Result<i32, ApiError> {
+    if !(0..=10_000).contains(&bps) {
+        return Err(ApiError::BadRequest("invalid interest rate".into()));
+    }
+    Ok(bps)
 }
 
 pub fn require_non_empty_name(name: &str) -> Result<String, ApiError> {

@@ -203,6 +203,10 @@ mod tests {
             archived_at: None,
             created_at: Utc::now(),
             exclude_from_projections: false,
+            interest_rate_bps: 0,
+            interest_rate_type: crate::models::InterestRateType::Apy,
+            interest_accrued_through: None,
+            interest_carry_micros: 0,
         }
     }
 

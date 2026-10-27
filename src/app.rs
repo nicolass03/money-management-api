@@ -174,6 +174,10 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
                 .delete(routes::accounts::delete_account),
         )
         .route(
+            "/accounts/{id}/interest",
+            get(routes::accounts::list_account_interest),
+        )
+        .route(
             "/transfers",
             get(routes::transfers::list_transfers).post(routes::transfers::create_transfer),
         )
