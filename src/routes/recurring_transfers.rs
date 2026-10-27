@@ -13,8 +13,9 @@ use crate::validation::{
     parse_currency, parse_date, parse_optional_name, parse_pay_frequency, require_positive_amount,
 };
 
-// Templates are materialized into transfers by the daily job (`charge_due_transfers`); like
-// transfers they never affect projections, so writes finish without re-freezing history.
+// Templates are materialized into transfers by the daily job (`charge_due_transfers`). Projections
+// only project their occurrences from today on (live periods), so writes finish without
+// re-freezing history.
 
 fn validate_recurring_transfer(
     body: &RecurringTransferRequest,

@@ -6,16 +6,18 @@
 //! job, mutation paths, and the rebuild script — funnels through [`sync_history`], so the freezing
 //! logic lives in exactly one place.
 
+use std::collections::HashMap;
+
 use chrono::{Duration, NaiveDate, Utc};
-use diesel_async::AsyncConnection;
+use diesel_async::{AsyncConnection, AsyncPgConnection};
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::models::ProjectionHistoryRow;
+use crate::models::{AccountRow, ProjectionHistoryRow, RecurringTransferRow, TransferRow};
 use crate::repos::projection_history::{self, NewProjectionHistory};
 use crate::repos::{
     accounts, budgets, connection, expenses, income, income_schedules, planned_expenses,
-    recurring_expenses, settings,
+    recurring_expenses, recurring_transfers, settings, transfers,
 };
 use crate::services::currency::convert_amount;
 use crate::services::exchange_rates::get_exchange_rates;
@@ -78,12 +80,13 @@ pub async fn load_projection_inputs(
     let planned = planned_expenses::list_with_tags_with_conn(&mut conn, user_id).await?;
     let budgets = budgets::list_with_tags_and_spent_with_conn(&mut conn, user_id).await?;
 
-    // Opening balance = Σ every account's initial amount converted to the display currency. ALL
-    // accounts (active + archived): archived accounts' historical rows still count, so their
-    // initial amount must stay in the seed to keep the running balance continuous.
-    let initial_free_money: i64 = accounts::list_all_with_conn(&mut conn, user_id)
-        .await?
+    // Opening balance = Σ every projected account's initial amount converted to the display
+    // currency. ALL of them (active + archived): archived accounts' historical rows still count, so
+    // their initial amount must stay in the seed to keep the running balance continuous.
+    let accounts = accounts::list_all_with_conn(&mut conn, user_id).await?;
+    let initial_free_money: i64 = accounts
         .iter()
+        .filter(|account| !account.exclude_from_projections)
         .map(|account| {
             i64::from(convert_amount(
                 account.initial_amount,
@@ -93,6 +96,16 @@ pub async fn load_projection_inputs(
             ))
         })
         .sum();
+    let excluded_accounts: HashMap<Uuid, String> = accounts
+        .iter()
+        .filter(|account| account.exclude_from_projections)
+        .map(|account| {
+            let label = account.name.clone();
+            (account.id, label.unwrap_or_else(|| account.currency.to_iso().to_string()))
+        })
+        .collect();
+    let (crossing_transfers, crossing_recurring_transfers) =
+        load_crossing_transfers(&mut conn, user_id, &accounts, &excluded_accounts).await?;
 
     Ok(Some(ProjectionInputs {
         primary_schedule,
@@ -107,7 +120,44 @@ pub async fn load_projection_inputs(
         initial_free_money,
         projection_start_date: settings.projection_start_date,
         projection_end_date: settings.projection_end_date,
+        excluded_accounts,
+        crossing_transfers,
+        crossing_recurring_transfers,
     }))
+}
+
+/// Transfers (tombstones included) and the recurring transfers the daily job still runs, between
+/// an excluded and a projected account. Only those move money in or out of projections, so nothing
+/// is loaded while no account is excluded.
+async fn load_crossing_transfers(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+    accounts: &[AccountRow],
+    excluded: &HashMap<Uuid, String>,
+) -> Result<(Vec<(TransferRow, bool)>, Vec<RecurringTransferRow>), ApiError> {
+    if excluded.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let excluded_ids: Vec<Uuid> = excluded.keys().copied().collect();
+    let crossing = transfers::list_crossing_with_conn(conn, user_id, &excluded_ids).await?;
+
+    // Like the daily job, a template with an archived account is paused.
+    let is_active = |id: Uuid| {
+        accounts
+            .iter()
+            .any(|account| account.id == id && account.archived_at.is_none())
+    };
+    let recurring = recurring_transfers::list_all_with_conn(conn, user_id)
+        .await?
+        .into_iter()
+        .filter(|template| {
+            let (from, to) = (template.from_account_id, template.to_account_id);
+            excluded.contains_key(&from) != excluded.contains_key(&to)
+                && is_active(from)
+                && is_active(to)
+        })
+        .collect();
+    Ok((crossing, recurring))
 }
 
 /// Projection rows after the frozen period `base`: seeded from its cumulative and starting the day
@@ -279,6 +329,9 @@ mod tests {
             initial_free_money: 5_000,
             projection_start_date: NaiveDate::from_ymd_opt(2026, 1, 1),
             projection_end_date: None,
+            excluded_accounts: HashMap::new(),
+            crossing_transfers: Vec::new(),
+            crossing_recurring_transfers: Vec::new(),
         }
     }
 

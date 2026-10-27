@@ -86,6 +86,8 @@ pub struct AccountRow {
     pub initial_amount: i32,
     pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// Keeps the account's starting balance and rows out of projections.
+    pub exclude_from_projections: bool,
 }
 
 /// A transfer between two of the user's accounts. The selected columns are exactly the API shape
@@ -328,6 +330,7 @@ pub struct AccountResponse {
     pub balance: i64,
     pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub exclude_from_projections: bool,
 }
 
 pub fn account_to_response(row: AccountRow, balance: i64) -> AccountResponse {
@@ -339,6 +342,7 @@ pub fn account_to_response(row: AccountRow, balance: i64) -> AccountResponse {
         balance,
         archived_at: row.archived_at,
         created_at: row.created_at,
+        exclude_from_projections: row.exclude_from_projections,
     }
 }
 

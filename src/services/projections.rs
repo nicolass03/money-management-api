@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::models::{
     BudgetRow, CurrencyCode, ExpenseRow, IncomePayScheduleRow, IncomeRow, PlannedExpenseRow,
-    RecurringExpenseRow,
+    RecurringExpenseRow, RecurringTransferRow, TransferRow,
 };
 use crate::services::currency::{convert_amount, ExchangeRates};
 use crate::services::expense_period::{
@@ -15,7 +15,8 @@ use crate::services::expense_period::{
     GetExpenseItemsOptions,
 };
 use crate::services::pay_periods::{
-    get_pay_dates_in_range, get_projection_periods, schedule_from_income, PayPeriod,
+    get_pay_dates_in_range, get_projection_periods, schedule_from_income,
+    schedule_from_recurring_transfer, PayPeriod,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,10 +103,28 @@ pub struct ProjectionInputs {
     pub budgets: Vec<(BudgetRow, Vec<String>, i32)>,
     pub display_currency: CurrencyCode,
     pub rates: ExchangeRates,
-    /// Opening balance: Σ every account's (active + archived) initial amount in display currency.
+    /// Opening balance: Σ every projected account's (active + archived) initial amount in display
+    /// currency.
     pub initial_free_money: i64,
     pub projection_start_date: Option<NaiveDate>,
     pub projection_end_date: Option<NaiveDate>,
+    /// Accounts excluded from projections, each with the label a transfer into it shows. Their
+    /// rows, recurring templates and pay schedules stay out of every period.
+    pub excluded_accounts: HashMap<Uuid, String>,
+    /// Transfers between an excluded and a projected account — the only ones that move money in or
+    /// out of projections (empty when no account is excluded). Soft-deleted tombstones are flagged
+    /// `true`: they only keep their recurring slot.
+    pub crossing_transfers: Vec<(TransferRow, bool)>,
+    /// Recurring transfers between an excluded and a projected account that the daily job still
+    /// runs (both accounts active).
+    pub crossing_recurring_transfers: Vec<RecurringTransferRow>,
+}
+
+impl ProjectionInputs {
+    /// Whether a row on `account_id` stays out of projections.
+    fn excludes(&self, account_id: Option<Uuid>) -> bool {
+        account_id.is_some_and(|id| self.excluded_accounts.contains_key(&id))
+    }
 }
 
 /// The period's start, or the projection start date when it falls inside the period (the opening
@@ -116,17 +135,21 @@ fn effective_period_start(period: &PayPeriod, projection_start_date: Option<Naiv
         .unwrap_or(period.start_date)
 }
 
-/// Persisted (non-deleted) income dated inside `period`, in display currency.
-fn sum_income_in_period(
-    entries: &[IncomeRow],
-    period: &PayPeriod,
-    display_currency: CurrencyCode,
-    rates: &ExchangeRates,
-) -> i64 {
-    entries
+/// Persisted (non-deleted) income dated inside `period` on projected accounts, in display currency.
+fn sum_income_in_period(inputs: &ProjectionInputs, period: &PayPeriod) -> i64 {
+    inputs
+        .income_all
         .iter()
-        .filter(|entry| entry.deleted_at.is_none() && period.contains(entry.date))
-        .map(|entry| i64::from(convert_amount(entry.amount, entry.currency, display_currency, rates)))
+        .filter(|entry| {
+            entry.deleted_at.is_none()
+                && period.contains(entry.date)
+                && !inputs.excludes(entry.account_id)
+        })
+        .map(|entry| {
+            let converted =
+                convert_amount(entry.amount, entry.currency, inputs.display_currency, &inputs.rates);
+            i64::from(converted)
+        })
         .sum()
 }
 
@@ -141,19 +164,21 @@ fn scheduled_income_keys(entries: &[IncomeRow]) -> HashSet<(Uuid, NaiveDate)> {
 }
 
 /// Projected scheduled income for a period: future pay-date occurrences (on or after
-/// `today`) from every pay schedule that have not yet been materialized or tombstoned.
-/// Past/current occurrences come from persisted rows via `sum_income_in_period`, mirroring
-/// how expenses treat past periods as actual and future periods as projected.
+/// `today`) from every pay schedule paying into a projected account that have not yet been
+/// materialized or tombstoned. Past/current occurrences come from persisted rows via
+/// `sum_income_in_period`, mirroring how expenses treat past periods as actual and future periods
+/// as projected.
 fn projected_income_in_period(
-    schedules: &[IncomePayScheduleRow],
+    inputs: &ProjectionInputs,
     period: &PayPeriod,
     materialized: &HashSet<(Uuid, NaiveDate)>,
-    display_currency: CurrencyCode,
-    rates: &ExchangeRates,
     today: NaiveDate,
 ) -> i64 {
     let mut total = 0;
-    for schedule in schedules {
+    for schedule in &inputs.schedules {
+        if inputs.excludes(schedule.account_id) {
+            continue;
+        }
         let input = schedule_from_income(schedule);
         for date in get_pay_dates_in_range(&input, period.start_date, period.end_date) {
             if date < today || materialized.contains(&(schedule.id, date)) {
@@ -162,18 +187,85 @@ fn projected_income_in_period(
             total += i64::from(convert_amount(
                 schedule.amount,
                 schedule.currency,
-                display_currency,
-                rates,
+                inputs.display_currency,
+                &inputs.rates,
             ));
         }
     }
     total
 }
 
+/// Transfers between excluded and projected accounts in `period`: the total arriving from excluded
+/// accounts (counted like income) and an item per transfer leaving to one (counted like an
+/// expense). Recorded transfers are actual; occurrences of recurring ones from `today` on whose
+/// slot isn't in `recorded` (materialized or deleted) are projected, like recurring expenses.
+fn crossing_transfers_in_period(
+    inputs: &ProjectionInputs,
+    period: &PayPeriod,
+    recorded: &HashSet<(Uuid, NaiveDate)>,
+    today: NaiveDate,
+) -> (i64, Vec<ProjectionExpenseItem>) {
+    let mut incoming = 0;
+    let mut outgoing = Vec::new();
+    let mut add = |name: &Option<String>,
+                   to_account_id: Uuid,
+                   amount: i32,
+                   currency: CurrencyCode,
+                   date: NaiveDate,
+                   projected: bool| {
+        let converted = convert_amount(amount, currency, inputs.display_currency, &inputs.rates);
+        // Every crossing transfer has exactly one excluded side: into one, the money leaves the
+        // projection; out of one, it arrives.
+        let Some(label) = inputs.excluded_accounts.get(&to_account_id) else {
+            incoming += i64::from(converted);
+            return;
+        };
+        outgoing.push(ProjectionExpenseItem {
+            id: None,
+            recurring_id: None,
+            planned_expense_id: None,
+            budget_id: None,
+            account_id: None,
+            budget_total: None,
+            budget_spent: None,
+            is_budget_summary: None,
+            name: format!("→ {}", name.as_deref().unwrap_or(label)),
+            date,
+            scheduled_date: None,
+            amount,
+            currency,
+            original_amount: None,
+            original_currency: None,
+            converted_amount: converted,
+            tags: Vec::new(),
+            is_subscription: false,
+            projected,
+            created_at: None,
+        });
+    };
+
+    for (row, deleted) in &inputs.crossing_transfers {
+        if !deleted && period.contains(row.date) {
+            add(&row.name, row.to_account_id, row.amount, row.currency, row.date, false);
+        }
+    }
+    for template in &inputs.crossing_recurring_transfers {
+        let schedule = schedule_from_recurring_transfer(template);
+        for date in get_pay_dates_in_range(&schedule, period.start_date, period.end_date) {
+            if date >= today && !recorded.contains(&(template.id, date)) {
+                let (amount, currency) = (template.amount, template.currency);
+                add(&template.name, template.to_account_id, amount, currency, date, true);
+            }
+        }
+    }
+    (incoming, outgoing)
+}
+
 /// Builds projection rows for the primary schedule's periods overlapping
 /// `[projection_start_date, projection_end_date]`, carrying a running balance seeded with
 /// `opening_balance`. When the start falls mid-period, that opening period runs on the opening
-/// balance alone (see the comments below).
+/// balance alone (see the comments below). Rows on excluded accounts are left out; transfers
+/// between those and projected accounts count as money in or out.
 pub fn build_projection_rows(
     inputs: &ProjectionInputs,
     opening_balance: i64,
@@ -185,16 +277,26 @@ pub fn build_projection_rows(
     let periods =
         get_projection_periods(&schedule, today, projection_start_date, projection_end_date);
 
-    let expense_list = to_expense_with_tags(&inputs.expenses);
-    let recurring_list = to_recurring_with_tags(&inputs.recurring);
-    let planned_list = to_planned_with_tags(&inputs.planned);
+    let mut expense_list = to_expense_with_tags(&inputs.expenses);
+    let mut recurring_list = to_recurring_with_tags(&inputs.recurring);
+    let mut planned_list = to_planned_with_tags(&inputs.planned);
     let budget_list = to_budget_with_tags(&inputs.budgets);
     let display_currency = inputs.display_currency;
     let rates = &inputs.rates;
 
     let mut running_balance = opening_balance;
+    // Built from every row, excluded accounts' included, so an occurrence charged, paid, received
+    // or transferred there is never projected again.
     let materialized = build_expense_period_materialized(&expense_list, &budget_list);
     let scheduled_keys = scheduled_income_keys(&inputs.income_all);
+    let transfer_slots: HashSet<(Uuid, NaiveDate)> = inputs
+        .crossing_transfers
+        .iter()
+        .filter_map(|(row, _)| row.recurring_transfer_id.map(|id| (id, row.date)))
+        .collect();
+    expense_list.retain(|expense| !inputs.excludes(expense.row.account_id));
+    recurring_list.retain(|recurring| !inputs.excludes(recurring.row.account_id));
+    planned_list.retain(|planned| !inputs.excludes(planned.row.account_id));
 
     periods
         .into_iter()
@@ -206,22 +308,18 @@ pub fn build_projection_rows(
             // The opening period runs on the accounts' starting balance alone: no salary until the
             // next pay date, and its "free" shows that starting balance.
             let is_opening = period_start_date != period.start_date;
+            let (transfers_in, transfers_out) =
+                crossing_transfers_in_period(inputs, &period, &transfer_slots, today);
 
             let income_total = if is_opening {
                 0
             } else {
-                sum_income_in_period(&inputs.income_all, &period, display_currency, rates)
-                    + projected_income_in_period(
-                        &inputs.schedules,
-                        &period,
-                        &scheduled_keys,
-                        display_currency,
-                        rates,
-                        today,
-                    )
+                sum_income_in_period(inputs, &period)
+                    + projected_income_in_period(inputs, &period, &scheduled_keys, today)
+                    + transfers_in
             };
 
-            let expense_items = get_expense_items_in_period(
+            let mut expense_items = get_expense_items_in_period(
                 &expense_list,
                 &recurring_list,
                 &planned_list,
@@ -235,10 +333,12 @@ pub fn build_projection_rows(
                     include_budget_summaries: false,
                     sort: ExpenseItemSort::DateAsc,
                 },
-            )
-            .into_iter()
-            .filter(|item| item.date >= period_start_date)
-            .collect::<Vec<_>>();
+            );
+            if !transfers_out.is_empty() {
+                expense_items.extend(transfers_out);
+                sort_projection_expense_items(&mut expense_items, ExpenseItemSort::DateAsc);
+            }
+            expense_items.retain(|item| item.date >= period_start_date);
 
             let expense_total: i64 = expense_items
                 .iter()
@@ -331,6 +431,9 @@ mod tests {
             initial_free_money: 0,
             projection_start_date: None,
             projection_end_date: None,
+            excluded_accounts: HashMap::new(),
+            crossing_transfers: Vec::new(),
+            crossing_recurring_transfers: Vec::new(),
         };
         build_projection_rows(&inputs, 0, None, None, date("2026-06-01"))
     }

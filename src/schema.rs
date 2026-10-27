@@ -26,6 +26,7 @@ diesel::table! {
         initial_amount -> Int4,
         archived_at -> Nullable<Timestamptz>,
         created_at -> Timestamptz,
+        exclude_from_projections -> Bool,
     }
 }
 

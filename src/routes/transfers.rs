@@ -8,11 +8,14 @@ use crate::error::ApiError;
 use crate::models::TransferRow;
 use crate::repos::transfers::{self as transfers_repo, TransferFields};
 use crate::routes::helpers::{finish_write, resolve_transfer_accounts};
+use crate::services::projection_history::HistorySync;
 use crate::state::AppState;
 use crate::validation::{parse_currency, parse_date, parse_optional_name, require_positive_amount};
 
-// Transfers only move money between the user's own same-currency accounts: they change account
-// balances but are net-zero for projections, so writes finish without re-freezing history.
+// Transfers only move money between the user's own same-currency accounts, so they are net-zero
+// for projections — except between an account excluded from projections and a projected one,
+// where they are money in or out. Writes therefore re-freeze history from the transfer's date
+// (a no-op unless that date falls in an already-frozen period).
 
 fn validate_transfer(body: &TransferRequest) -> Result<TransferFields, ApiError> {
     Ok(TransferFields {
@@ -48,7 +51,7 @@ pub async fn create_transfer(
     )
     .await?;
     let row = transfers_repo::create(&state.db_pool, user.sub, &fields).await?;
-    finish_write(&state, user.sub, None).await;
+    finish_write(&state, user.sub, Some(HistorySync::From(row.date))).await;
     Ok(Json(row))
 }
 
@@ -85,7 +88,8 @@ pub async fn update_transfer(
     let row = transfers_repo::update(&state.db_pool, user.sub, id, &fields)
         .await?
         .ok_or(ApiError::NotFound)?;
-    finish_write(&state, user.sub, None).await;
+    let earliest = existing.date.min(row.date);
+    finish_write(&state, user.sub, Some(HistorySync::From(earliest))).await;
     Ok(Json(row))
 }
 
@@ -94,9 +98,9 @@ pub async fn delete_transfer(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !transfers_repo::soft_delete(&state.db_pool, user.sub, id).await? {
-        return Err(ApiError::NotFound);
-    }
-    finish_write(&state, user.sub, None).await;
+    let date = transfers_repo::soft_delete(&state.db_pool, user.sub, id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    finish_write(&state, user.sub, Some(HistorySync::From(date))).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }

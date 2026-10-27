@@ -111,6 +111,8 @@ pub struct CreateAccountRequest {
     pub name: Option<String>,
     pub currency: String,
     pub initial_amount: i32,
+    #[serde(default)]
+    pub exclude_from_projections: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,6 +121,8 @@ pub struct UpdateAccountRequest {
     pub name: Option<String>,
     pub currency: String,
     pub initial_amount: i32,
+    /// Absent keeps the current value, so a client that predates the flag can't clear it.
+    pub exclude_from_projections: Option<bool>,
 }
 
 /// Create / full edit of a transfer. `currency` is the currency the client parsed `amount` in; it

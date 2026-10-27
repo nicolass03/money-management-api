@@ -38,8 +38,9 @@ async fn list_with_balances(
 }
 
 /// Rebuilds the frozen projection history and invalidates caches: the projection seed is the sum
-/// of account starting balances, so any account create/edit/archive changes every frozen
-/// cumulative value. Mirrors the settings patch path.
+/// of account starting balances, and excluding an account drops its rows from every period, so any
+/// account create/edit/archive changes every frozen cumulative value. Mirrors the settings patch
+/// path.
 async fn after_account_change(state: &AppState, user_id: Uuid) {
     finish_write(state, user_id, Some(HistorySync::Rebuild)).await;
 }
@@ -68,6 +69,7 @@ pub async fn create_account(
         name.as_deref(),
         currency,
         initial_amount,
+        body.exclude_from_projections,
     )
     .await?;
     after_account_change(&state, user.sub).await;
@@ -84,7 +86,7 @@ pub async fn update_account(
 ) -> Result<Json<AccountResponse>, ApiError> {
     let as_of = resolve_client_today(query.as_of.as_deref())?;
     // Currency is immutable after creation (see repos::accounts::update); the request's currency
-    // field is ignored. Only name and initial amount are updated.
+    // field is ignored. Only name, initial amount and the projection flag are updated.
     let name = parse_optional_name(body.name.as_deref())?;
     let initial_amount = require_initial_amount(body.initial_amount)?;
 
@@ -94,6 +96,7 @@ pub async fn update_account(
         id,
         name.as_deref(),
         initial_amount,
+        body.exclude_from_projections,
     )
     .await?
     .ok_or(ApiError::NotFound)?;

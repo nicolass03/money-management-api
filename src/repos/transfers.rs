@@ -35,6 +35,26 @@ pub async fn list_all(pool: &DbPool, user_id: Uuid) -> Result<Vec<TransferRow>, 
         .map_err(ApiError::from)
 }
 
+/// Every transfer that moves money between `excluded` accounts and the rest — soft-deleted
+/// tombstones included, flagged `true` — for projections: the live rows count as money in or out
+/// of the projected accounts, and every row's `(recurring_transfer_id, date)` slot keeps that
+/// occurrence from being projected again.
+pub async fn list_crossing_with_conn(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+    excluded: &[Uuid],
+) -> Result<Vec<(TransferRow, bool)>, ApiError> {
+    let from_excluded = transfers::from_account_id.eq_any(excluded);
+    let to_excluded = transfers::to_account_id.eq_any(excluded);
+    transfers::table
+        .filter(transfers::user_id.eq(user_id))
+        .filter(from_excluded.ne(to_excluded))
+        .select((TransferRow::as_select(), transfers::deleted_at.is_not_null()))
+        .load(conn)
+        .await
+        .map_err(ApiError::from)
+}
+
 pub async fn find_by_id(
     pool: &DbPool,
     user_id: Uuid,
@@ -104,26 +124,32 @@ pub async fn update(
 }
 
 /// Soft-deletes a transfer (the only delete path). For a recurring occurrence the tombstone keeps
-/// its `(recurring_transfer_id, date)` slot, so the daily job never re-creates it. Returns whether
-/// a row was deleted.
-pub async fn soft_delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<bool, ApiError> {
+/// its `(recurring_transfer_id, date)` slot, so the daily job never re-creates it. Returns the
+/// deleted transfer's date, or `None` when no row was deleted.
+pub async fn soft_delete(
+    pool: &DbPool,
+    user_id: Uuid,
+    id: Uuid,
+) -> Result<Option<NaiveDate>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
     conn.transaction(|conn| {
         Box::pin(async move {
-            let updated = diesel::update(
+            let date = diesel::update(
                 transfers::table
                     .filter(transfers::user_id.eq(user_id))
                     .filter(transfers::id.eq(id))
                     .filter(transfers::deleted_at.is_null()),
             )
             .set(transfers::deleted_at.eq(now))
-            .execute(conn)
-            .await?;
-            if updated > 0 {
+            .returning(transfers::date)
+            .get_result(conn)
+            .await
+            .optional()?;
+            if date.is_some() {
                 settings::bump_cache_revision(conn, user_id).await?;
             }
-            Ok::<bool, diesel::result::Error>(updated > 0)
+            Ok::<Option<NaiveDate>, diesel::result::Error>(date)
         })
     })
     .await

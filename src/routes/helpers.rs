@@ -2,9 +2,11 @@ use chrono::NaiveDate;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::models::{CurrencyCode, ExpenseRow};
+use crate::models::{AccountRow, CurrencyCode, ExpenseRow};
 use crate::repos::{accounts, budgets, connection};
-use crate::services::accounts::{compute_balances, pick_funded_account, pick_richest_account};
+use crate::services::accounts::{
+    compute_balances, pick_funded_account, pick_richest_account, projected_accounts,
+};
 use crate::services::pay_periods::{get_period_containing, schedule_from_income, PayPeriod};
 use crate::services::projection_history::{self, HistorySync};
 use crate::state::{AppState, DbPool};
@@ -82,8 +84,9 @@ pub async fn resolve_transfer_accounts(
 
 /// Account a one-off payment in `currency` draws from: `preferred` while it is still active; else
 /// a same-currency account that covers `amount`; else the richest same-currency account (may go
-/// negative); `None` when the user holds no active account in that currency. Keeps
-/// currency-follows-account, since every candidate is in the payment's currency.
+/// negative) — among projected accounts first, then excluded ones; `None` when the user holds no
+/// active account in that currency. Keeps currency-follows-account, since every candidate is in the
+/// payment's currency.
 pub async fn pick_payment_account(
     pool: &DbPool,
     user_id: Uuid,
@@ -98,8 +101,11 @@ pub async fn pick_payment_account(
         return Ok(Some(id));
     }
     let balances = compute_balances(&mut conn, user_id, &accounts_list, as_of).await?;
-    Ok(pick_funded_account(&accounts_list, &balances, currency, amount)
-        .or_else(|| pick_richest_account(&accounts_list, &balances, currency)))
+    let pick = |candidates: &[AccountRow]| {
+        pick_funded_account(candidates, &balances, currency, amount)
+            .or_else(|| pick_richest_account(candidates, &balances, currency))
+    };
+    Ok(pick(&projected_accounts(&accounts_list)).or_else(|| pick(&accounts_list)))
 }
 
 /// The primary schedule's pay period containing `today`, if a primary schedule is set.

@@ -76,6 +76,7 @@ pub async fn create(
     name: Option<&str>,
     currency: CurrencyCode,
     initial_amount: i32,
+    exclude_from_projections: bool,
 ) -> Result<AccountRow, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     let now = Utc::now();
@@ -87,6 +88,7 @@ pub async fn create(
                     accounts::name.eq(name),
                     accounts::currency.eq(currency),
                     accounts::initial_amount.eq(initial_amount),
+                    accounts::exclude_from_projections.eq(exclude_from_projections),
                     accounts::created_at.eq(now),
                 ))
                 .returning(AccountRow::as_returning())
@@ -103,13 +105,14 @@ pub async fn create(
 /// Updates the mutable fields of an account. Currency is intentionally NOT updatable: it is fixed
 /// at creation because existing expense/income rows are stored in the account's currency and are
 /// summed without conversion when deriving the balance — changing it would silently corrupt the
-/// balance. Only `name` and `initial_amount` can change.
+/// balance. Only `name`, `initial_amount` and `exclude_from_projections` (when given) can change.
 pub async fn update(
     pool: &DbPool,
     user_id: Uuid,
     id: Uuid,
     name: Option<&str>,
     initial_amount: i32,
+    exclude_from_projections: Option<bool>,
 ) -> Result<Option<AccountRow>, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     conn.transaction(|conn| {
@@ -122,6 +125,7 @@ pub async fn update(
             .set((
                 accounts::name.eq(name),
                 accounts::initial_amount.eq(initial_amount),
+                exclude_from_projections.map(|exclude| accounts::exclude_from_projections.eq(exclude)),
             ))
             .returning(AccountRow::as_returning())
             .get_result(conn)

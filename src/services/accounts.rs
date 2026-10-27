@@ -112,6 +112,16 @@ pub async fn compute_balances(
         .collect())
 }
 
+/// The accounts counted in projections. Automatic account picks try these first, so a charge the
+/// projection already counts doesn't land in an excluded account and drop out of it.
+pub fn projected_accounts(accounts_list: &[AccountRow]) -> Vec<AccountRow> {
+    accounts_list
+        .iter()
+        .filter(|account| !account.exclude_from_projections)
+        .cloned()
+        .collect()
+}
+
 /// Picks the account a same-currency charge should draw from: among non-archived accounts whose
 /// currency matches `currency` and whose balance covers `min_amount`, the one with the highest
 /// balance. Returns `None` when no matching-currency account can cover the charge.
@@ -192,6 +202,7 @@ mod tests {
             initial_amount: 0,
             archived_at: None,
             created_at: Utc::now(),
+            exclude_from_projections: false,
         }
     }
 

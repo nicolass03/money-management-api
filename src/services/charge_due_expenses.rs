@@ -10,6 +10,7 @@ use crate::repos::{
 };
 use crate::services::accounts::{
     compute_balances, pick_funded_account, pick_richest_account, pick_richest_any_currency,
+    projected_accounts,
 };
 use crate::services::currency::convert_amount;
 use crate::services::exchange_rates::get_exchange_rates;
@@ -39,6 +40,10 @@ pub async fn charge_due_expenses(
         .display_currency;
     let recurring_list = recurring_expenses::list_all_with_conn(&mut conn, user_id).await?;
     let accounts = accounts_repo::list_active_with_conn(&mut conn, user_id).await?;
+    // Automatic picks (steps 2–4 below) only use accounts counted in projections, unless every
+    // account is excluded.
+    let projected = projected_accounts(&accounts);
+    let candidates = if projected.is_empty() { &accounts } else { &projected };
     let now = Utc::now();
     let mut created = 0;
 
@@ -65,7 +70,8 @@ pub async fn charge_due_expenses(
             //  1. An explicitly pinned, still-active account — charged in its (== the template's)
             //     currency even if it can't cover the charge (allowed to go negative), honoring
             //     the user's choice.
-            //  2. Otherwise pick by currency: a same-currency account that can cover the charge.
+            //  2. Otherwise pick by currency among the candidates (projected accounts first): a
+            //     same-currency account that can cover the charge.
             //  3. Else the richest display-currency account (converted, may go negative).
             //  4. Else the richest account in ANY currency (by converted value) — so a charge is
             //     never stranded off-book when the user has no display-currency account.
@@ -79,12 +85,12 @@ pub async fn charge_due_expenses(
             let (amount, currency, account_id) = if let Some(id) = pinned {
                 (recurring.amount, recurring.currency, Some(id))
             } else if let Some(id) =
-                pick_funded_account(&accounts, &balances, recurring.currency, recurring.amount)
+                pick_funded_account(candidates, &balances, recurring.currency, recurring.amount)
             {
                 (recurring.amount, recurring.currency, Some(id))
-            } else if let Some(id) = pick_richest_account(&accounts, &balances, display_currency) {
+            } else if let Some(id) = pick_richest_account(candidates, &balances, display_currency) {
                 (convert_to(display_currency), display_currency, Some(id))
-            } else if let Some(account) = pick_richest_any_currency(&accounts, &balances, &rates) {
+            } else if let Some(account) = pick_richest_any_currency(candidates, &balances, &rates) {
                 (convert_to(account.currency), account.currency, Some(account.id))
             } else {
                 (convert_to(display_currency), display_currency, None)

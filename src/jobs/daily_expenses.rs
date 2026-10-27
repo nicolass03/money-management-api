@@ -83,8 +83,9 @@ pub async fn run_daily_expenses(
         // Freeze any period that has now closed. Runs after materialization so a closing period
         // already has its due income/expenses materialized before it is frozen. If a catch-up just
         // materialized rows into an already-frozen period, re-freeze from the oldest catch-up day.
-        // Transfers are net-zero for projections, so they never trigger a re-freeze.
-        let sync = if expenses_created + income_created > 0 {
+        // Transfers count too: between an excluded and a projected account they move money in or
+        // out of projections.
+        let sync = if expenses_created + income_created + transfers_created > 0 {
             HistorySync::From(today - chrono::Duration::days(CATCH_UP_DAYS))
         } else {
             HistorySync::Append
