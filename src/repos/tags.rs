@@ -5,7 +5,10 @@ use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use uuid::Uuid;
 
-use crate::schema::{budget_tags, expense_tags, planned_expense_tags, recurring_expense_tags, tags};
+use crate::schema::{
+    budget_tags, expense_tags, planned_expense_tags, planned_expenses, recurring_expense_tags,
+    recurring_expenses, tags,
+};
 use diesel_async::AsyncPgConnection;
 
 type DbResult<T> = Result<T, diesel::result::Error>;
@@ -312,9 +315,27 @@ pub async fn tags_for_budgets(
     tag_map_for_ids(conn, user_id, ids, "budget").await
 }
 
+/// Tags still on a live item. Tag rows are never deleted, so this keeps ones left on nothing
+/// (e.g. a fixed typo) out of suggestions and filters. Hard deletes cascade to the link tables;
+/// soft-deleted recurring/planned items keep their links, hence the `deleted_at` filters.
 pub async fn list_all_names(conn: &mut AsyncPgConnection, user_id: Uuid) -> DbResult<Vec<String>> {
+    let on_recurring = recurring_expense_tags::table
+        .inner_join(recurring_expenses::table)
+        .filter(recurring_expenses::deleted_at.is_null())
+        .select(recurring_expense_tags::tag_id);
+    let on_planned = planned_expense_tags::table
+        .inner_join(planned_expenses::table)
+        .filter(planned_expenses::deleted_at.is_null())
+        .select(planned_expense_tags::tag_id);
     tags::table
         .filter(tags::user_id.eq(user_id))
+        .filter(
+            tags::id
+                .eq_any(expense_tags::table.select(expense_tags::tag_id))
+                .or(tags::id.eq_any(on_recurring))
+                .or(tags::id.eq_any(on_planned))
+                .or(tags::id.eq_any(budget_tags::table.select(budget_tags::tag_id))),
+        )
         .select(tags::name)
         .order(tags::name.asc())
         .load(conn)
