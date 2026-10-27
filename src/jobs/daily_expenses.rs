@@ -12,6 +12,7 @@ use crate::error::ApiError;
 use crate::repos::{connection, users};
 use crate::services::charge_due_expenses::charge_due_expenses;
 use crate::services::charge_due_income::charge_due_income;
+use crate::services::charge_due_transfers::charge_due_transfers;
 use crate::services::projection_history::{sync_history, HistorySync};
 use crate::services::subscription_reminders::generate_subscription_reminders_for_date;
 use crate::state::DbPool;
@@ -26,7 +27,7 @@ const DAILY_EXPENSES_LOCK_KEY: i64 = 8_451_903_221;
 /// can't be deleted, so nothing is duplicated or resurrected.
 const CATCH_UP_DAYS: i64 = 6;
 
-/// Materializes due recurring expenses and due scheduled income for today and the
+/// Materializes due recurring transfers, recurring expenses and scheduled income for today and the
 /// `CATCH_UP_DAYS` before it (oldest first, so balance-based account picks see earlier charges).
 /// Income mirrors the recurring-expense flow: due occurrences become actual rows on their pay date.
 pub async fn run_daily_expenses(
@@ -43,6 +44,13 @@ pub async fn run_daily_expenses(
     for user_id in user_ids {
         // Every per-user step is isolated: one user's failure (transient DB error, bad row) must
         // not abort the whole batch and skip everyone else. Each step self-heals on the next run.
+        // Transfers go first so the expense charge's balance-based account pick sees them.
+        let transfers_created = charge_due_transfers(pool, user_id, &dates)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(%user_id, %error, "charge due transfers failed");
+                0
+            });
         let expenses_created = charge_due_expenses(pool, user_id, &dates)
             .await
             .unwrap_or_else(|error| {
@@ -55,7 +63,7 @@ pub async fn run_daily_expenses(
                 tracing::error!(%user_id, %error, "charge due income failed");
                 0
             });
-        if expenses_created + income_created > 0 {
+        if expenses_created + income_created + transfers_created > 0 {
             if let Some(cache) = cache {
                 cache.invalidate(user_id).await;
             }
@@ -75,6 +83,7 @@ pub async fn run_daily_expenses(
         // Freeze any period that has now closed. Runs after materialization so a closing period
         // already has its due income/expenses materialized before it is frozen. If a catch-up just
         // materialized rows into an already-frozen period, re-freeze from the oldest catch-up day.
+        // Transfers are net-zero for projections, so they never trigger a re-freeze.
         let sync = if expenses_created + income_created > 0 {
             HistorySync::From(today - chrono::Duration::days(CATCH_UP_DAYS))
         } else {
@@ -88,7 +97,11 @@ pub async fn run_daily_expenses(
             }
         };
 
-        created += expenses_created + income_created + reminders_created + history_created;
+        created += transfers_created
+            + expenses_created
+            + income_created
+            + reminders_created
+            + history_created;
     }
     Ok((today, created))
 }

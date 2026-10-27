@@ -57,6 +57,29 @@ pub async fn resolve_account_for_update(
     }
 }
 
+/// Validates the two accounts of a transfer (or recurring transfer). Each side follows
+/// [`resolve_account_for_update`] — it must belong to the user and be active, unless it is the
+/// account already on that side of the row being edited (`current` = its from/to) — and must hold
+/// `currency`, which makes the transfer same-currency (v1) and keeps balances conversion-free.
+pub async fn resolve_transfer_accounts(
+    pool: &DbPool,
+    user_id: Uuid,
+    from_account_id: Uuid,
+    to_account_id: Uuid,
+    currency: CurrencyCode,
+    current: Option<(Uuid, Uuid)>,
+) -> Result<(), ApiError> {
+    if from_account_id == to_account_id {
+        return Err(ApiError::BadRequest(
+            "cannot transfer to the same account".into(),
+        ));
+    }
+    let (current_from, current_to) = current.unzip();
+    resolve_account_for_update(pool, user_id, Some(from_account_id), current_from, currency).await?;
+    resolve_account_for_update(pool, user_id, Some(to_account_id), current_to, currency).await?;
+    Ok(())
+}
+
 /// Account a one-off payment in `currency` draws from: `preferred` while it is still active; else
 /// a same-currency account that covers `amount`; else the richest same-currency account (may go
 /// negative); `None` when the user holds no active account in that currency. Keeps

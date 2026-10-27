@@ -173,6 +173,25 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
             axum::routing::patch(routes::accounts::update_account)
                 .delete(routes::accounts::delete_account),
         )
+        .route(
+            "/transfers",
+            get(routes::transfers::list_transfers).post(routes::transfers::create_transfer),
+        )
+        .route(
+            "/transfers/{id}",
+            axum::routing::patch(routes::transfers::update_transfer)
+                .delete(routes::transfers::delete_transfer),
+        )
+        .route(
+            "/recurring-transfers",
+            get(routes::recurring_transfers::list_recurring_transfers)
+                .post(routes::recurring_transfers::create_recurring_transfer),
+        )
+        .route(
+            "/recurring-transfers/{id}",
+            axum::routing::patch(routes::recurring_transfers::update_recurring_transfer)
+                .delete(routes::recurring_transfers::delete_recurring_transfer),
+        )
         .route("/savings", get(routes::savings::list_savings))
         .route("/tags", get(routes::tags::list_tags))
         .route("/projections", get(routes::projections::get_projections))

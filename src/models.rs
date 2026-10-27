@@ -88,6 +88,41 @@ pub struct AccountRow {
     pub created_at: DateTime<Utc>,
 }
 
+/// A transfer between two of the user's accounts. The selected columns are exactly the API shape
+/// (soft-deleted rows are never read), so the row is serialized as the response directly.
+#[derive(Debug, Clone, Queryable, Selectable, Serialize)]
+#[diesel(table_name = crate::schema::transfers)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferRow {
+    pub id: Uuid,
+    pub name: Option<String>,
+    pub from_account_id: Uuid,
+    pub to_account_id: Uuid,
+    pub amount: i32,
+    pub currency: CurrencyCode,
+    pub date: NaiveDate,
+    /// Set when the daily job materialized this occurrence from a recurring transfer.
+    pub recurring_transfer_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A recurring transfer template (see [`TransferRow`] for why it doubles as the response).
+#[derive(Debug, Clone, Queryable, Selectable, Serialize)]
+#[diesel(table_name = crate::schema::recurring_transfers)]
+#[serde(rename_all = "camelCase")]
+pub struct RecurringTransferRow {
+    pub id: Uuid,
+    pub name: Option<String>,
+    pub from_account_id: Uuid,
+    pub to_account_id: Uuid,
+    pub amount: i32,
+    pub currency: CurrencyCode,
+    pub anchor_date: NaiveDate,
+    pub frequency: PayFrequency,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = crate::schema::projection_history)]
 pub struct ProjectionHistoryRow {

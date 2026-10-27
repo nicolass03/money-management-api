@@ -7,18 +7,19 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::models::{AccountRow, CurrencyCode};
-use crate::schema::{expenses, income, user_settings};
+use crate::schema::{expenses, income, transfers, user_settings};
 use crate::services::currency::{to_base_major, ExchangeRates};
 
 /// Derived current balance per account, in the account's own currency:
-/// `initial_amount + Σ(income assigned) − Σ(expenses assigned)`, counting only rows dated within
+/// `initial_amount + Σ(income assigned) − Σ(expenses assigned) + Σ(transfers in) − Σ(transfers
+/// out)`, counting only rows dated within
 /// `[projection_start_date, as_of]`. `initial_amount` is therefore the account's balance on the
 /// user's projection start date — the same meaning the projection seed gives it — so moving the
 /// start date to today and entering current balances "starts over" without touching history.
 /// With no start date set, all history up to `as_of` counts. No currency conversion is needed:
 /// every row written with an `account_id` carries that account's currency (the forms force
 /// currency-follows-account), and the recurring charge job stores its charge in the chosen
-/// account's currency.
+/// account's currency. Transfers are same-currency (v1), so both sides share the row's currency.
 pub async fn compute_balances(
     conn: &mut AsyncPgConnection,
     user_id: Uuid,
@@ -61,20 +62,51 @@ pub async fn compute_balances(
     }
     let income_sums: Vec<(Option<Uuid>, Option<i64>)> = income_query.load(conn).await?;
 
-    let to_map = |rows: Vec<(Option<Uuid>, Option<i64>)>| -> HashMap<Uuid, i64> {
+    // Transfers between the user's own accounts: out of the source, into the destination.
+    let mut transfers_out_query = transfers::table
+        .filter(transfers::user_id.eq(user_id))
+        .filter(transfers::deleted_at.is_null())
+        .filter(transfers::date.le(as_of))
+        .group_by(transfers::from_account_id)
+        .select((transfers::from_account_id, diesel::dsl::sum(transfers::amount)))
+        .into_boxed();
+    let mut transfers_in_query = transfers::table
+        .filter(transfers::user_id.eq(user_id))
+        .filter(transfers::deleted_at.is_null())
+        .filter(transfers::date.le(as_of))
+        .group_by(transfers::to_account_id)
+        .select((transfers::to_account_id, diesel::dsl::sum(transfers::amount)))
+        .into_boxed();
+    if let Some(start) = start_date {
+        transfers_out_query = transfers_out_query.filter(transfers::date.ge(start));
+        transfers_in_query = transfers_in_query.filter(transfers::date.ge(start));
+    }
+    let transfers_out: Vec<(Uuid, Option<i64>)> = transfers_out_query.load(conn).await?;
+    let transfers_in: Vec<(Uuid, Option<i64>)> = transfers_in_query.load(conn).await?;
+
+    // Fold every signed per-account sum into one delta map.
+    let mut deltas: HashMap<Uuid, i64> = HashMap::new();
+    let assigned = |rows: Vec<(Option<Uuid>, Option<i64>)>, sign: i64| {
         rows.into_iter()
-            .filter_map(|(id, total)| id.map(|id| (id, total.unwrap_or(0))))
-            .collect()
+            .filter_map(move |(id, total)| Some((id?, sign * total.unwrap_or(0))))
     };
-    let expense_map = to_map(expense_sums);
-    let income_map = to_map(income_sums);
+    let transferred = |rows: Vec<(Uuid, Option<i64>)>, sign: i64| {
+        rows.into_iter()
+            .map(move |(id, total)| (id, sign * total.unwrap_or(0)))
+    };
+    for (id, delta) in assigned(income_sums, 1)
+        .chain(assigned(expense_sums, -1))
+        .chain(transferred(transfers_in, 1))
+        .chain(transferred(transfers_out, -1))
+    {
+        *deltas.entry(id).or_default() += delta;
+    }
 
     Ok(accounts_list
         .iter()
         .map(|account| {
             let balance = i64::from(account.initial_amount)
-                + income_map.get(&account.id).copied().unwrap_or(0)
-                - expense_map.get(&account.id).copied().unwrap_or(0);
+                + deltas.get(&account.id).copied().unwrap_or(0);
             (account.id, balance)
         })
         .collect())

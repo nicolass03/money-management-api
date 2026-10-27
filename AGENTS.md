@@ -101,6 +101,14 @@ Scheduled income is **materialized by the daily cron**, not pre-synced. `jobs/da
 - Clients: web `ExpenseForm` (edit mode) / iOS `ExpenseFormModel(editing:)` for manual rows; the amount editor allows `0` only for recurring rows ("0 = didn't happen").
 - A unique-index violation (e.g. a double-tapped pay) returns **409**, not 500.
 
+## Transfers (between the user's own accounts)
+
+- Tables `transfers` + `recurring_transfers` (migration `20261027150000_add_transfers`). **v1 is same-currency only**: `routes/helpers.rs::resolve_transfer_accounts` requires both accounts to hold the row's `currency` (and differ, and be active unless unchanged on edit).
+- Transfers are **not** expenses or income: they never appear in period-view, extra spent, reports, upcoming-payable or projections. Same-currency transfers are net-zero across accounts and the projection seed is Σ initial amounts, so projections are unaffected and writes finish with `finish_write(.., None)` (no re-freeze). Only `services/accounts.rs::compute_balances` counts them (+in / −out, same `[projection_start_date, as_of]` window).
+- Routes: `GET/POST /transfers`, `PATCH/DELETE /transfers/{id}`, `GET/POST /recurring-transfers`, `PATCH/DELETE /recurring-transfers/{id}`. `PATCH` is a full edit; on a recurring occurrence (`recurringTransferId` set) date and accounts must stay unchanged (400), since moving the date would free its slot for the catch-up to re-create.
+- **Deletes are always soft** (`deleted_at`) for both tables. A tombstoned occurrence keeps its `(recurring_transfer_id, date)` slot (`transfers_recurring_date_unique`), so the cron never resurrects it. Deleting a template keeps its materialized transfers.
+- Daily job: `charge_due_transfers` runs **before** `charge_due_expenses` (so balance-based account picks see the day's transfers), inserts with `ON CONFLICT DO NOTHING`, never creates occurrences before the template's `updated_at` date, and skips (pauses) templates whose from/to account is archived. Transfers created by the job invalidate caches but don't trigger a history re-freeze.
+
 ## Railway deployment
 
 The repo includes a multi-stage `Dockerfile` (cargo-chef; no system libraries beyond `ca-certificates`) and `railway.toml` with `healthcheckPath = "/health"`.

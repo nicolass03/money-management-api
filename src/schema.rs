@@ -214,6 +214,27 @@ diesel::table! {
 diesel::table! {
     use diesel::sql_types::*;
     use super::sql_types::CurrencyCode;
+    use super::sql_types::PayFrequency;
+
+    recurring_transfers (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        name -> Nullable<Text>,
+        from_account_id -> Uuid,
+        to_account_id -> Uuid,
+        amount -> Int4,
+        currency -> CurrencyCode,
+        anchor_date -> Date,
+        frequency -> PayFrequency,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+        deleted_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::CurrencyCode;
 
     savings (id) {
         name -> Text,
@@ -245,6 +266,25 @@ diesel::table! {
         created_at -> Timestamptz,
         user_id -> Uuid,
         id -> Uuid,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::CurrencyCode;
+
+    transfers (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        name -> Nullable<Text>,
+        from_account_id -> Uuid,
+        to_account_id -> Uuid,
+        amount -> Int4,
+        currency -> CurrencyCode,
+        date -> Date,
+        recurring_transfer_id -> Nullable<Uuid>,
+        created_at -> Timestamptz,
+        deleted_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -301,10 +341,13 @@ diesel::joinable!(recurring_expense_tags -> recurring_expenses (recurring_expens
 diesel::joinable!(recurring_expense_tags -> tags (tag_id));
 diesel::joinable!(recurring_expenses -> accounts (account_id));
 diesel::joinable!(recurring_expenses -> users (user_id));
+diesel::joinable!(recurring_transfers -> users (user_id));
 diesel::joinable!(savings -> users (user_id));
 diesel::joinable!(subscription_reminders -> recurring_expenses (recurring_expense_id));
 diesel::joinable!(subscription_reminders -> users (user_id));
 diesel::joinable!(tags -> users (user_id));
+diesel::joinable!(transfers -> recurring_transfers (recurring_transfer_id));
+diesel::joinable!(transfers -> users (user_id));
 diesel::joinable!(user_settings -> income_pay_schedules (primary_schedule_id));
 diesel::joinable!(user_settings -> users (user_id));
 
@@ -322,9 +365,11 @@ diesel::allow_tables_to_appear_in_same_query!(
     projection_history,
     recurring_expense_tags,
     recurring_expenses,
+    recurring_transfers,
     savings,
     subscription_reminders,
     tags,
+    transfers,
     user_settings,
     users,
 );

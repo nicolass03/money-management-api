@@ -121,6 +121,32 @@ pub struct UpdateAccountRequest {
     pub initial_amount: i32,
 }
 
+/// Create / full edit of a transfer. `currency` is the currency the client parsed `amount` in; it
+/// must match both accounts (v1 transfers are same-currency only).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferRequest {
+    pub name: Option<String>,
+    pub from_account_id: Uuid,
+    pub to_account_id: Uuid,
+    pub amount: i32,
+    pub currency: String,
+    pub date: String,
+}
+
+/// Create / edit of a recurring transfer template (same account rules as [`TransferRequest`]).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecurringTransferRequest {
+    pub name: Option<String>,
+    pub from_account_id: Uuid,
+    pub to_account_id: Uuid,
+    pub amount: i32,
+    pub currency: String,
+    pub anchor_date: String,
+    pub frequency: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateIncomeScheduleRequest {

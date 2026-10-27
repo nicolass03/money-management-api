@@ -1,6 +1,6 @@
 use chrono::{Datelike, Duration, Months, NaiveDate};
 
-use crate::models::{IncomePayScheduleRow, PayFrequency, RecurringExpenseRow};
+use crate::models::{IncomePayScheduleRow, PayFrequency, RecurringExpenseRow, RecurringTransferRow};
 
 pub const DEFAULT_PROJECTION_MONTHS_FORWARD: i32 = 12;
 const MAX_PROJECTION_PERIODS: usize = 5_000;
@@ -57,6 +57,14 @@ pub fn schedule_from_recurring(recurring: &RecurringExpenseRow) -> PayScheduleIn
         anchor_date: recurring.anchor_date,
         frequency: recurring.frequency,
         last_payment_date: recurring.last_payment_date,
+    }
+}
+
+pub fn schedule_from_recurring_transfer(template: &RecurringTransferRow) -> PayScheduleInput {
+    PayScheduleInput {
+        anchor_date: template.anchor_date,
+        frequency: template.frequency,
+        last_payment_date: None,
     }
 }
 
