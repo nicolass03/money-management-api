@@ -6,15 +6,17 @@ use uuid::Uuid;
 use crate::auth::extractor::AuthenticatedUser;
 use crate::dto::PatchSettingsRequest;
 use crate::error::ApiError;
-use crate::models::{UserSettingsResponse, UserSettingsRow};
+use crate::models::{CurrencyCode, UserSettingsResponse, UserSettingsRow};
 use crate::repos::{income_schedules, settings as settings_repo};
 use crate::routes::helpers::finish_write;
+use crate::services::currency::convert_amount;
+use crate::services::exchange_rates::get_exchange_rates;
 use crate::services::pay_periods::add_months;
 use crate::services::projection_history::HistorySync;
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, parse_language, parse_theme, require_extra_spent_limit,
-    resolve_client_today,
+    resolve_client_today, MAX_AMOUNT,
 };
 
 pub async fn get_settings(
@@ -76,7 +78,10 @@ pub async fn patch_settings(
     let extra_spent_limit = match body.extra_spent_limit {
         Some(Some(value)) => Some(Some(require_extra_spent_limit(value)?)),
         Some(None) => Some(None),
-        None => None,
+        None => match display_currency {
+            Some(next) => convert_extra_spent_limit(&state, user.sub, next).await?,
+            None => None,
+        },
     };
 
     let row = settings_repo::update_user_settings(
@@ -110,6 +115,25 @@ pub async fn patch_settings(
     finish_write(&state, user.sub, history).await;
 
     Ok(Json(settings_response(&state, user.sub, &row).await?))
+}
+
+/// The extra-spent limit is stored in display-currency minor units, so a display-currency change
+/// must re-denominate it (otherwise $500.00 = 50000 would become COP 50,000). `None` = untouched.
+async fn convert_extra_spent_limit(
+    state: &AppState,
+    user_id: Uuid,
+    next: CurrencyCode,
+) -> Result<Option<Option<i32>>, ApiError> {
+    let current = state.loader.user_settings(user_id).await?;
+    let Some(limit) = current.extra_spent_limit else {
+        return Ok(None);
+    };
+    if current.display_currency == next {
+        return Ok(None);
+    }
+    let rates = get_exchange_rates(&state.db_pool, false).await?;
+    let converted = convert_amount(limit, current.display_currency, next, &rates);
+    Ok(Some(Some(converted.clamp(1, MAX_AMOUNT))))
 }
 
 fn validate_projection_dates(
