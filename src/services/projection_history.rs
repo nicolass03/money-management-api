@@ -21,7 +21,7 @@ use crate::services::currency::convert_amount;
 use crate::services::exchange_rates::get_exchange_rates;
 use crate::services::projections::{build_projection_rows, ProjectionInputs, ProjectionRow};
 use crate::state::DbPool;
-use crate::validation::today_iso;
+use crate::validation::today_utc;
 
 /// Which frozen periods a [`sync_history`] call recomputes.
 #[derive(Debug, Clone, Copy)]
@@ -56,12 +56,12 @@ pub async fn load_projection_inputs(
     pool: &DbPool,
     user_id: Uuid,
 ) -> Result<Option<ProjectionInputs>, ApiError> {
-    let settings = settings::get_user_settings(pool, user_id).await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    let settings = settings::get_user_settings_with_conn(&mut conn, user_id).await?;
     let Some(schedule_id) = settings.primary_schedule_id else {
         return Ok(None);
     };
 
-    let mut conn = connection::user_connection(pool, user_id).await?;
     let Some(primary_schedule) =
         income_schedules::find_by_id_with_conn(&mut conn, user_id, schedule_id).await?
     else {
@@ -116,22 +116,13 @@ pub async fn load_projection_inputs(
 pub fn build_rows_after(
     inputs: &ProjectionInputs,
     base: Option<&ProjectionHistoryRow>,
-    today: &str,
+    today: NaiveDate,
 ) -> Vec<ProjectionRow> {
     let (seed, start) = match base {
-        Some(row) => (
-            row.cumulative,
-            Some((row.pay_date + Duration::days(1)).format("%Y-%m-%d").to_string()),
-        ),
-        None => (
-            inputs.initial_free_money,
-            inputs.projection_start_date.map(|d| d.format("%Y-%m-%d").to_string()),
-        ),
+        Some(row) => (row.cumulative, Some(row.pay_date + Duration::days(1))),
+        None => (inputs.initial_free_money, inputs.projection_start_date),
     };
-    let end = inputs
-        .projection_end_date
-        .map(|d| d.format("%Y-%m-%d").to_string());
-    build_projection_rows(inputs, seed, start.as_deref(), end.as_deref(), today)
+    build_projection_rows(inputs, seed, start, inputs.projection_end_date, today)
 }
 
 /// Whether frozen rows can seed the live path. Rows frozen in another display currency can't (a
@@ -173,21 +164,19 @@ pub async fn sync_history(
     let base = keep.checked_sub(1).map(|index| &history[index]);
 
     let cutoff = freeze_cutoff();
-    let rows: Vec<NewProjectionHistory> = build_rows_after(&inputs, base, &today_iso())
+    let rows: Vec<NewProjectionHistory> = build_rows_after(&inputs, base, today_utc())
         .into_iter()
-        .filter_map(|row| {
-            let pay_date = parse_iso(&row.pay_date)?;
-            (pay_date < cutoff).then_some(NewProjectionHistory {
+        .filter(|row| row.pay_date < cutoff)
+        .map(|row| NewProjectionHistory {
                 schedule_id,
-                pay_date,
-                start_date: parse_iso(&row.start_date)?,
-                end_date: parse_iso(&row.end_date)?,
+                pay_date: row.pay_date,
+                start_date: row.start_date,
+                end_date: row.end_date,
                 income: row.income_total,
                 planned_spent: row.expense_total,
                 free: row.period_free,
                 cumulative: row.cumulative_free,
                 currency: inputs.display_currency,
-            })
         })
         .collect();
     let computed = rows.len();
@@ -222,15 +211,15 @@ pub async fn sync_history(
 }
 
 /// Re-freezes history after a change dated `date`, only when that date falls in an already-frozen
-/// period. The common case — a change in the current or a future period — is settled by two cheap
-/// lookups without loading anything, since those periods are computed live.
+/// period. The common case — a change in the current or a future period — is settled by one cheap
+/// lookup without loading anything, since those periods are computed live.
 pub async fn refresh_history_for_date(
     pool: &DbPool,
     user_id: Uuid,
+    primary_schedule_id: Option<Uuid>,
     date: NaiveDate,
 ) -> Result<(), ApiError> {
-    let user_settings = settings::get_user_settings(pool, user_id).await?;
-    let Some(schedule_id) = user_settings.primary_schedule_id else {
+    let Some(schedule_id) = primary_schedule_id else {
         return Ok(());
     };
     let mut conn = connection::user_connection(pool, user_id).await?;
@@ -251,10 +240,6 @@ pub async fn clear_history(pool: &DbPool, user_id: Uuid) -> Result<(), ApiError>
     let mut conn = connection::user_connection(pool, user_id).await?;
     projection_history::delete_all_for_user_with_conn(&mut conn, user_id).await?;
     Ok(())
-}
-
-fn parse_iso(value: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
 }
 
 #[cfg(test)]
@@ -300,14 +285,15 @@ mod tests {
     #[test]
     fn freezes_only_closed_periods_with_carried_balance() {
         let inputs = inputs();
-        let rows: Vec<ProjectionRow> = build_rows_after(&inputs, None, "2026-06-01")
+        let rows: Vec<ProjectionRow> =
+            build_rows_after(&inputs, None, NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
             .into_iter()
             .filter(|row| row.is_past)
             .collect();
 
         // Pay dates strictly before today: 2026-01-15 .. 2026-05-15 (five closed periods). The
         // 2026-06-15 period is current and must not be frozen.
-        let pay_dates: Vec<String> = rows.iter().map(|row| row.pay_date.clone()).collect();
+        let pay_dates: Vec<String> = rows.iter().map(|row| row.pay_date.to_string()).collect();
         assert_eq!(
             pay_dates,
             vec![

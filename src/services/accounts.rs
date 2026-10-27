@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::error::ApiError;
 use crate::models::{AccountRow, CurrencyCode};
 use crate::schema::{expenses, income, user_settings};
+use crate::services::currency::{to_base_major, ExchangeRates};
 
 /// Derived current balance per account, in the account's own currency:
 /// `initial_amount + Σ(income assigned) − Σ(expenses assigned)`, counting only rows dated within
@@ -113,18 +114,23 @@ pub fn pick_richest_account(
         .map(|(id, _)| id)
 }
 
-/// Last-resort fallback for a recurring charge: the highest-balance account in *any* currency.
-/// Used only when the user has no account in the display currency, so that a charge is never
-/// stranded off-book (`account_id = NULL`, invisible to every balance). The caller converts the
-/// amount into the chosen account's currency.
+/// Last-resort fallback for a recurring charge: the highest-balance account in *any* currency,
+/// comparing balances by value (converted with `rates`), not raw minor units — COP has no minor
+/// unit, so its raw numbers dwarf the others. Used only when the user has no account in the display
+/// currency, so that a charge is never stranded off-book (`account_id = NULL`, invisible to every
+/// balance). The caller converts the amount into the chosen account's currency.
 pub fn pick_richest_any_currency(
     accounts_list: &[AccountRow],
     balances: &HashMap<Uuid, i64>,
+    rates: &ExchangeRates,
 ) -> Option<AccountRow> {
     accounts_list
         .iter()
-        .filter_map(|a| balances.get(&a.id).map(|b| (a, *b)))
-        .max_by_key(|(_, balance)| *balance)
+        .filter_map(|a| {
+            let balance = *balances.get(&a.id)?;
+            Some((a, to_base_major(balance, a.currency, rates)?))
+        })
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(a, _)| a.clone())
 }
 
@@ -132,6 +138,18 @@ pub fn pick_richest_any_currency(
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    fn rates() -> ExchangeRates {
+        ExchangeRates {
+            base: "USD".into(),
+            rates: HashMap::from([
+                ("USD".to_string(), 1.0),
+                ("EUR".to_string(), 0.9),
+                ("COP".to_string(), 4_000.0),
+            ]),
+            fetched_at: Utc::now().to_rfc3339(),
+        }
+    }
 
     fn account(currency: CurrencyCode) -> AccountRow {
         AccountRow {
@@ -181,7 +199,8 @@ mod tests {
     #[test]
     fn any_currency_pick_is_used_when_no_display_currency_account_exists() {
         // Display currency is USD but the user holds only EUR/COP accounts: rather than strand the
-        // charge off-book, the richest account in any currency is chosen.
+        // charge off-book, the richest account in any currency is chosen — by value: €30.00 beats
+        // COP 50,000 (~$12.50) even though 50,000 > 3,000 in raw minor units.
         let eur = account(CurrencyCode::Eur);
         let cop = account(CurrencyCode::Cop);
         let accounts = vec![eur.clone(), cop.clone()];
@@ -189,8 +208,8 @@ mod tests {
 
         assert_eq!(pick_richest_account(&accounts, &balances, CurrencyCode::Usd), None);
         assert_eq!(
-            pick_richest_any_currency(&accounts, &balances).map(|a| a.id),
-            Some(cop.id)
+            pick_richest_any_currency(&accounts, &balances, &rates()).map(|a| a.id),
+            Some(eur.id)
         );
     }
 
@@ -198,6 +217,6 @@ mod tests {
     fn any_currency_pick_is_none_without_accounts() {
         let accounts: Vec<AccountRow> = vec![];
         let balances = HashMap::new();
-        assert!(pick_richest_any_currency(&accounts, &balances).is_none());
+        assert!(pick_richest_any_currency(&accounts, &balances, &rates()).is_none());
     }
 }

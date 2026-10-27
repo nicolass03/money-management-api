@@ -8,7 +8,7 @@ use crate::state::AppState;
 pub async fn list_tags(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Vec<String>>, ApiError> {
+) -> Result<Json<std::sync::Arc<Vec<String>>>, ApiError> {
     let settings = state.loader.user_settings(user.sub).await?;
     let names = state
         .loader

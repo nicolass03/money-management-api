@@ -4,6 +4,7 @@ pub mod cache;
 pub mod config;
 pub mod dto;
 pub mod error;
+pub mod http;
 pub mod jobs;
 pub mod models;
 pub mod rate_limit;

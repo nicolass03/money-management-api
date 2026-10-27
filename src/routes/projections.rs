@@ -29,10 +29,11 @@ pub async fn get_projection_period_items(
     AuthenticatedUser(user): AuthenticatedUser,
     Query(query): Query<ProjectionPeriodItemsQuery>,
 ) -> Result<Json<Arc<ProjectionRow>>, ApiError> {
-    parse_date(&query.pay_date).map_err(|_| ApiError::BadRequest("invalid pay date".into()))?;
+    let pay_date =
+        parse_date(&query.pay_date).map_err(|_| ApiError::BadRequest("invalid pay date".into()))?;
     let row = state
         .loader
-        .projection_period_items(user.sub, &query.pay_date, query.as_of.as_deref())
+        .projection_period_items(user.sub, pay_date, query.as_of.as_deref())
         .await?;
     Ok(Json(row))
 }

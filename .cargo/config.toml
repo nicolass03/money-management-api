@@ -1,6 +1,0 @@
-# macOS-only: keep global [env]/[build] rustflags out of here so Linux Docker/Railway builds work.
-[target.x86_64-apple-darwin]
-rustflags = ["-L", "/opt/homebrew/opt/libpq/lib"]
-
-[target.aarch64-apple-darwin]
-rustflags = ["-L", "/opt/homebrew/opt/libpq/lib"]

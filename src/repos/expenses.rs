@@ -56,42 +56,6 @@ pub async fn list_with_tags_with_conn(
         .collect())
 }
 
-pub async fn list_with_tags_in_range(
-    pool: &DbPool,
-    user_id: Uuid,
-    from: NaiveDate,
-    to: NaiveDate,
-) -> Result<Vec<(ExpenseRow, Vec<String>)>, ApiError> {
-    let mut conn = connection::user_connection(pool, user_id).await?;
-    list_with_tags_in_range_with_conn(&mut conn, user_id, from, to).await
-}
-
-pub async fn list_with_tags_in_range_with_conn(
-    conn: &mut AsyncPgConnection,
-    user_id: Uuid,
-    from: NaiveDate,
-    to: NaiveDate,
-) -> Result<Vec<(ExpenseRow, Vec<String>)>, ApiError> {
-    let rows = expenses::table
-        .filter(expenses::user_id.eq(user_id))
-        .filter(expenses::date.ge(from))
-        .filter(expenses::date.le(to))
-        .order(expenses::created_at.desc())
-        .select(ExpenseRow::as_select())
-        .load(conn)
-        .await
-        .map_err(ApiError::from)?;
-    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-    let tag_map = tags::tags_for_expenses(conn, user_id, &ids).await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            let tags = tag_map.get(&row.id).cloned().unwrap_or_default();
-            (row, tags)
-        })
-        .collect())
-}
-
 pub async fn find_by_id(
     pool: &DbPool,
     user_id: Uuid,
@@ -240,6 +204,59 @@ pub async fn update_amount(
     .map_err(ApiError::from)
 }
 
+/// Full edit of a manual expense (no recurring, planned or budget source). Returns `None` when no
+/// such expense exists.
+pub async fn update_manual(
+    pool: &DbPool,
+    user_id: Uuid,
+    id: Uuid,
+    edit: ManualExpenseEdit<'_>,
+) -> Result<Option<ExpenseRow>, ApiError> {
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    conn.transaction(|conn| {
+        Box::pin(async move {
+            let expense = diesel::update(
+                expenses::table
+                    .filter(expenses::user_id.eq(user_id))
+                    .filter(expenses::id.eq(id))
+                    .filter(expenses::recurring_id.is_null())
+                    .filter(expenses::planned_expense_id.is_null())
+                    .filter(expenses::budget_id.is_null()),
+            )
+            .set((
+                expenses::name.eq(edit.name),
+                expenses::amount.eq(edit.amount),
+                expenses::currency.eq(edit.currency),
+                expenses::date.eq(edit.date),
+                expenses::is_subscription.eq(edit.is_subscription),
+                expenses::account_id.eq(edit.account_id),
+            ))
+            .returning(ExpenseRow::as_returning())
+            .get_result(conn)
+            .await
+            .optional()?;
+            if let Some(ref expense) = expense {
+                tags::set_expense_tags(conn, user_id, expense.id, edit.tags).await?;
+                settings::bump_cache_revision(conn, user_id).await?;
+            }
+            Ok::<Option<ExpenseRow>, diesel::result::Error>(expense)
+        })
+    })
+    .await
+    .map_err(ApiError::from)
+}
+
+/// New field values for [`update_manual`].
+pub struct ManualExpenseEdit<'a> {
+    pub name: &'a str,
+    pub amount: i32,
+    pub currency: CurrencyCode,
+    pub date: NaiveDate,
+    pub tags: &'a [String],
+    pub is_subscription: bool,
+    pub account_id: Option<Uuid>,
+}
+
 pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     conn.transaction(|conn| {
@@ -302,25 +319,13 @@ pub async fn find_by_planned_id(
 }
 
 /// Ids of planned (one-time) expenses that already have a recorded payment.
-pub async fn list_paid_planned_ids(pool: &DbPool, user_id: Uuid) -> Result<HashSet<Uuid>, ApiError> {
-    let mut conn = connection::user_connection(pool, user_id).await?;
-    let rows: Vec<Option<Uuid>> = expenses::table
-        .filter(expenses::user_id.eq(user_id))
-        .filter(expenses::planned_expense_id.is_not_null())
-        .select(expenses::planned_expense_id)
-        .load(&mut conn)
-        .await?;
-    Ok(rows.into_iter().flatten().collect())
-}
-
+/// Templates already charged for the occurrence due on `due_date` (early payments included, matched
+/// by their scheduled date).
 pub async fn get_materialized_recurring_ids_for_due_date(
-    pool: &DbPool,
+    conn: &mut AsyncPgConnection,
     user_id: Uuid,
-    date: &str,
+    due_date: NaiveDate,
 ) -> Result<HashSet<Uuid>, ApiError> {
-    let due_date = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .map_err(|_| ApiError::BadRequest("invalid date".into()))?;
-    let mut conn = connection::user_connection(pool, user_id).await?;
     let rows: Vec<Option<Uuid>> = expenses::table
         .filter(expenses::user_id.eq(user_id))
         .filter(expenses::recurring_id.is_not_null())
@@ -332,7 +337,7 @@ pub async fn get_materialized_recurring_ids_for_due_date(
                     .and(expenses::date.eq(due_date))),
         )
         .select(expenses::recurring_id)
-        .load(&mut conn)
+        .load(conn)
         .await?;
     Ok(rows.into_iter().flatten().collect())
 }

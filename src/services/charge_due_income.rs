@@ -1,10 +1,10 @@
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::repos::{connection, income as income_repo, income_schedules, settings as settings_repo};
-use crate::services::pay_periods::{get_pay_dates_in_range, schedule_from_income};
+use crate::services::pay_periods::{occurs_on, schedule_from_income};
 use crate::state::DbPool;
 
 fn is_scheduled_date_unique_violation(error: &DieselError) -> bool {
@@ -15,66 +15,54 @@ fn is_scheduled_date_unique_violation(error: &DieselError) -> bool {
     )
 }
 
-/// Materializes scheduled income that falls due on `date` for one user (mirrors
-/// `charge_due_expenses_for_date`). Idempotent: skips schedules that already have a
-/// materialized row or soft-deleted tombstone for the date, and treats the unique-index
-/// violation as an already-materialized no-op. Income is stored in the schedule's own
-/// currency (projections convert per row), matching the previous eager-sync behavior.
-pub async fn charge_due_income_for_date(
+/// Materializes scheduled income that falls due on each of `dates` for one user (mirrors
+/// `charge_due_expenses`). Idempotent: skips schedules that already have a materialized row or
+/// soft-deleted tombstone for the date, and treats the unique-index violation as an
+/// already-materialized no-op. Income is stored in the schedule's own currency (projections
+/// convert per row).
+pub async fn charge_due_income(
     pool: &DbPool,
     user_id: Uuid,
-    date: &str,
+    dates: &[NaiveDate],
 ) -> Result<i32, ApiError> {
-    let schedules = income_schedules::list_all(pool, user_id).await?;
-    let mut materialized_ids =
-        income_repo::get_materialized_schedule_ids_for_date(pool, user_id, date).await?;
-
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    let schedules = income_schedules::list_all_with_conn(&mut conn, user_id).await?;
     let now = Utc::now();
-    let due_date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .map_err(|_| ApiError::BadRequest("invalid date".into()))?;
     let mut created = 0;
 
-    // One connection for the whole per-user run instead of a checkout (and RLS round-trip) per
-    // schedule.
-    let mut conn = connection::user_connection(pool, user_id).await?;
-    for schedule in schedules {
-        if materialized_ids.contains(&schedule.id) {
-            continue;
-        }
-        // Like recurring expenses: no occurrence before the schedule was last saved, so catching
-        // up on missed days never backfills history.
-        if due_date < schedule.updated_at.date_naive() {
-            continue;
-        }
+    for &due_date in dates {
+        let materialized_ids =
+            income_repo::get_materialized_schedule_ids_for_date(&mut conn, user_id, due_date)
+                .await?;
 
-        let input = schedule_from_income(&schedule);
-        let due_dates = get_pay_dates_in_range(&input, date, date);
-        if due_dates.is_empty() {
-            continue;
-        }
-
-        let insert_result = income_repo::insert_scheduled(
-            &mut conn,
-            user_id,
-            &schedule.name,
-            schedule.amount,
-            schedule.currency,
-            due_date,
-            schedule.id,
-            schedule.account_id,
-            now,
-        )
-        .await;
-
-        match insert_result {
-            Ok(_) => {
-                materialized_ids.insert(schedule.id);
-                created += 1;
+        for schedule in &schedules {
+            // Like recurring expenses: no occurrence before the schedule was last saved, so
+            // catching up on missed days never backfills history.
+            if materialized_ids.contains(&schedule.id)
+                || due_date < schedule.updated_at.date_naive()
+                || !occurs_on(&schedule_from_income(schedule), due_date)
+            {
+                continue;
             }
-            Err(error) if is_scheduled_date_unique_violation(&error) => {
-                materialized_ids.insert(schedule.id);
+
+            let insert_result = income_repo::insert_scheduled(
+                &mut conn,
+                user_id,
+                &schedule.name,
+                schedule.amount,
+                schedule.currency,
+                due_date,
+                schedule.id,
+                schedule.account_id,
+                now,
+            )
+            .await;
+
+            match insert_result {
+                Ok(_) => created += 1,
+                Err(error) if is_scheduled_date_unique_violation(&error) => {}
+                Err(error) => return Err(ApiError::from(error)),
             }
-            Err(error) => return Err(ApiError::from(error)),
         }
     }
 

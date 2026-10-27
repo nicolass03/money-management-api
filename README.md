@@ -7,8 +7,7 @@ The Next.js frontend calls this API for all business logic and database access. 
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) (edition 2021)
-- PostgreSQL client library (`libpq`) for linking Diesel
-  - macOS: `brew install libpq` and ensure `.cargo/config.toml` paths match your install (or set `LDFLAGS` / `CPPFLAGS` as in `brew info libpq`)
+- No system libraries for the API itself (Diesel's backend only + rustls; no libpq/OpenSSL)
 - [Diesel CLI](https://diesel.rs/guides/getting-started) (optional, for schema introspection):
   ```bash
   cargo install diesel_cli --no-default-features --features postgres
@@ -36,7 +35,7 @@ Migrations live in `migrations/`. `src/schema.rs` is generated from the live Pos
 
 **Multi-user model:** `users.id` matches Supabase Auth `sub`. All user-owned tables include `user_id`; API repos scope queries by the authenticated user. `exchange_rate_snapshots` stays global.
 
-**Row-level security:** Migration `20250612130000_row_level_security` enables Postgres RLS on tenant tables. The API sets `app.user_id` (or `app.is_admin` for internal jobs) per connection via `src/repos/connection.rs`.
+**Row-level security:** Migration `20250612130000_row_level_security` enables Postgres RLS on tenant tables. The API sets `app.user_id` (or `app.is_admin` for internal jobs) per connection via `src/repos/connection.rs`. RLS is only enforced because the API connects as the `app_api` role (migration `20261027140000_app_api_role`); `postgres` bypasses it and is for migrations only.
 
 **Run migrations** (use session-mode pooler port `5432`, not transaction pooler `6543`).
 
@@ -117,7 +116,7 @@ This API runs as an always-on web service — no serverless adapter needed. The 
 
    | Variable | Value |
    |----------|-------|
-   | `DATABASE_URL` | Supabase Postgres connection string (transaction pooler `:6543` is fine) |
+   | `DATABASE_URL` | Supabase **session pooler** (`:5432`) connection string for the `app_api` role (user `app_api.<project-ref>`) |
    | `SUPABASE_URL` | Supabase project URL |
    | `CORS_ORIGIN` | Your deployed Next.js URL (e.g. `https://your-app.vercel.app`) |
    | `DAILY_EXPENSES_HOUR` | Hour in **UTC** (Railway containers use UTC) |

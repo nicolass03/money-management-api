@@ -1,19 +1,20 @@
 use axum::extract::State;
-use crate::routes::helpers::finish_write;
-use crate::services::projection_history::HistorySync;
 use axum::Json;
+use chrono::NaiveDate;
+use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
-use crate::cache::InvalidationScope;
 use crate::dto::PatchSettingsRequest;
 use crate::error::ApiError;
 use crate::models::{UserSettingsResponse, UserSettingsRow};
 use crate::repos::{income_schedules, settings as settings_repo};
+use crate::routes::helpers::finish_write;
 use crate::services::pay_periods::add_months;
+use crate::services::projection_history::HistorySync;
 use crate::state::AppState;
 use crate::validation::{
-    parse_currency, parse_date, parse_language, parse_theme, regex_like_date,
-    require_extra_spent_limit, today_iso,
+    parse_currency, parse_date, parse_language, parse_theme, require_extra_spent_limit,
+    resolve_client_today,
 };
 
 pub async fn get_settings(
@@ -21,8 +22,21 @@ pub async fn get_settings(
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<UserSettingsResponse>, ApiError> {
     let row = state.loader.user_settings(user.sub).await?;
-    let response = settings_response(&state.db_pool, user.sub, row).await?;
-    Ok(Json(response))
+    Ok(Json(settings_response(&state, user.sub, &row).await?))
+}
+
+/// `Some(None)` clears a nullable date, `Some(Some(_))` sets it, `None` leaves it untouched.
+fn parse_optional_date_patch(
+    value: &Option<Option<String>>,
+    error: &str,
+) -> Result<Option<Option<NaiveDate>>, ApiError> {
+    match value {
+        Some(Some(date)) => parse_date(date)
+            .map(|date| Some(Some(date)))
+            .map_err(|_| ApiError::BadRequest(error.into())),
+        Some(None) => Ok(Some(None)),
+        None => Ok(None),
+    }
 }
 
 pub async fn patch_settings(
@@ -30,63 +44,19 @@ pub async fn patch_settings(
     AuthenticatedUser(user): AuthenticatedUser,
     Json(body): Json<PatchSettingsRequest>,
 ) -> Result<Json<UserSettingsResponse>, ApiError> {
-    let display_currency = match body.display_currency {
-        Some(ref value) => Some(parse_currency(value)?),
-        None => None,
-    };
-    let language = match body.language {
-        Some(ref value) => Some(parse_language(value)?),
-        None => None,
-    };
-    let theme = match body.theme {
-        Some(ref value) => Some(parse_theme(value)?),
-        None => None,
-    };
-
-    if let Some(Some(ref date)) = body.projection_start_date {
-        if !regex_like_date(date) {
-            return Err(ApiError::BadRequest("invalid projection start date".into()));
-        }
-    }
-    if let Some(Some(ref date)) = body.projection_end_date {
-        if !regex_like_date(date) {
-            return Err(ApiError::BadRequest("invalid projection end date".into()));
-        }
-    }
-
-    let projection_start_date = match body.projection_start_date {
-        Some(Some(ref date)) => Some(Some(parse_date(date)?)),
-        Some(None) => Some(None),
-        None => None,
-    };
-    let projection_end_date = match body.projection_end_date {
-        Some(Some(ref date)) => Some(Some(parse_date(date)?)),
-        Some(None) => Some(None),
-        None => None,
-    };
-
-    let server_today = parse_date(&today_iso())?;
-    let as_of = match body.as_of.as_deref() {
-        Some(date) => {
-            if !regex_like_date(date) {
-                return Err(ApiError::BadRequest("invalid as-of date".into()));
-            }
-            parse_date(date)?
-        }
-        None => server_today,
-    };
-    if (as_of - server_today).num_days().abs() > 1 {
-        return Err(ApiError::BadRequest("invalid as-of date".into()));
-    }
+    let display_currency = body.display_currency.as_deref().map(parse_currency).transpose()?;
+    let language = body.language.as_deref().map(parse_language).transpose()?;
+    let theme = body.theme.as_deref().map(parse_theme).transpose()?;
+    let projection_start_date =
+        parse_optional_date_patch(&body.projection_start_date, "invalid projection start date")?;
+    let projection_end_date =
+        parse_optional_date_patch(&body.projection_end_date, "invalid projection end date")?;
+    let as_of = resolve_client_today(body.as_of.as_deref())?;
 
     if projection_start_date.is_some() || projection_end_date.is_some() {
         let current = state.loader.user_settings(user.sub).await?;
-        let effective_start = projection_start_date
-            .as_ref()
-            .map_or(current.projection_start_date, |value| *value);
-        let effective_end = projection_end_date
-            .as_ref()
-            .map_or(current.projection_end_date, |value| *value);
+        let effective_start = projection_start_date.unwrap_or(current.projection_start_date);
+        let effective_end = projection_end_date.unwrap_or(current.projection_end_date);
 
         validate_projection_dates(
             as_of,
@@ -137,16 +107,15 @@ pub async fn patch_settings(
     } else {
         None
     };
-    finish_write(&state, user.sub, InvalidationScope::SettingsChange, history).await;
+    finish_write(&state, user.sub, history).await;
 
-    let response = settings_response(&state.db_pool, user.sub, row).await?;
-    Ok(Json(response))
+    Ok(Json(settings_response(&state, user.sub, &row).await?))
 }
 
 fn validate_projection_dates(
-    as_of: chrono::NaiveDate,
-    start: Option<chrono::NaiveDate>,
-    end: Option<chrono::NaiveDate>,
+    as_of: NaiveDate,
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
     validate_end_bounds: bool,
 ) -> Result<(), &'static str> {
     if let (Some(start), Some(end)) = (start, end) {
@@ -157,12 +126,7 @@ fn validate_projection_dates(
 
     if validate_end_bounds {
         let end = end.expect("an explicitly set projection end date is present");
-        let max_end = chrono::NaiveDate::parse_from_str(
-            &add_months(&as_of.format("%Y-%m-%d").to_string(), 24),
-            "%Y-%m-%d",
-        )
-        .expect("calendar arithmetic returns a valid date");
-        if end < as_of || end > max_end {
+        if end < as_of || end > add_months(as_of, 24) {
             return Err("projection end date must be between today and two years from today");
         }
     }
@@ -170,25 +134,22 @@ fn validate_projection_dates(
     Ok(())
 }
 
+/// The settings response, embedding the primary schedule (from the cached schedule list).
 async fn settings_response(
-    pool: &crate::state::DbPool,
-    user_id: uuid::Uuid,
-    row: UserSettingsRow,
+    state: &AppState,
+    user_id: Uuid,
+    row: &UserSettingsRow,
 ) -> Result<UserSettingsResponse, ApiError> {
-    let primary_schedule = if let Some(schedule_id) = row.primary_schedule_id {
-        income_schedules::find_by_id(pool, user_id, schedule_id).await?
-    } else {
-        None
-    };
-    Ok(UserSettingsResponse::from_row(row, primary_schedule))
+    let primary_schedule = state.loader.primary_schedule(user_id, row).await?;
+    Ok(UserSettingsResponse::from_row(row.clone(), primary_schedule))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn date(value: &str) -> chrono::NaiveDate {
-        chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").unwrap()
+    fn date(value: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(value, "%Y-%m-%d").unwrap()
     }
 
     #[test]

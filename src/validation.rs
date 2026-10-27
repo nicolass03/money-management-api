@@ -85,6 +85,14 @@ pub fn require_positive_amount(amount: i32) -> Result<i32, ApiError> {
     Ok(amount)
 }
 
+/// An amount that may be zero (e.g. voiding a recurring charge that didn't happen).
+pub fn require_non_negative_amount(amount: i32) -> Result<i32, ApiError> {
+    if !(0..=MAX_AMOUNT).contains(&amount) {
+        return Err(ApiError::BadRequest("invalid amount".into()));
+    }
+    Ok(amount)
+}
+
 /// An account's starting balance. Non-negative (an account can later go negative via charges,
 /// but you can't open one already in the red) and bounded like other money values.
 pub fn require_initial_amount(amount: i32) -> Result<i32, ApiError> {
@@ -143,18 +151,31 @@ pub fn parse_tag_names(tags: &[String]) -> Result<Vec<String>, ApiError> {
     Ok(result)
 }
 
-pub fn today_iso() -> String {
-    chrono::Utc::now().format("%Y-%m-%d").to_string()
+pub fn today_utc() -> NaiveDate {
+    chrono::Utc::now().date_naive()
 }
 
 /// Reference calendar date for pay-period boundaries and day-relative views.
 /// Clients should pass their local `asOf`; server falls back to UTC today.
-pub fn resolve_reference_date(as_of: Option<&str>) -> Result<String, ApiError> {
+pub fn resolve_reference_date(as_of: Option<&str>) -> Result<NaiveDate, ApiError> {
     match as_of {
-        Some(value) if !value.is_empty() => {
-            parse_date(value)?;
-            Ok(value.to_string())
-        }
-        _ => Ok(today_iso()),
+        Some(value) if !value.is_empty() => parse_date(value),
+        _ => Ok(today_utc()),
     }
+}
+
+/// The client's local "today" (`asOf`) for date rules on writes — "must be in the future", "paid
+/// today", "within the current pay period" — so they follow the user's calendar instead of UTC's.
+/// Every timezone's date is within a day of UTC's, so anything further off is rejected. Falls back
+/// to UTC today when omitted.
+pub fn resolve_client_today(as_of: Option<&str>) -> Result<NaiveDate, ApiError> {
+    let today = today_utc();
+    let Some(value) = as_of.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(today);
+    };
+    let as_of = parse_date(value).map_err(|_| ApiError::BadRequest("invalid as-of date".into()))?;
+    if (as_of - today).num_days().abs() > 1 {
+        return Err(ApiError::BadRequest("invalid as-of date".into()));
+    }
+    Ok(as_of)
 }

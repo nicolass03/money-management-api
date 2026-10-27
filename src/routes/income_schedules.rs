@@ -5,7 +5,6 @@ use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
-use crate::cache::InvalidationScope;
 use crate::dto::{CreateIncomeScheduleRequest, UpdateIncomeScheduleRequest};
 use crate::error::ApiError;
 use crate::models::IncomePayScheduleResponse;
@@ -41,7 +40,7 @@ pub async fn list_schedules(
         .loader
         .schedules_list(user.sub, settings.cache_revision)
         .await?;
-    Ok(Json(rows.into_iter().map(Into::into).collect()))
+    Ok(Json(rows.iter().cloned().map(Into::into).collect()))
 }
 
 pub async fn create_schedule(
@@ -69,9 +68,7 @@ pub async fn create_schedule(
         account_id,
     )
     .await?;
-    state
-        .cache
-        .invalidate(InvalidationScope::ScheduleChange, user.sub).await;
+    finish_write(&state, user.sub, None).await;
     Ok(Json(schedule.into()))
 }
 
@@ -130,13 +127,7 @@ pub async fn update_schedule(
     let boundaries_moved =
         existing.anchor_date != schedule.anchor_date || existing.frequency != schedule.frequency;
     let rebuild = boundaries_moved && settings.primary_schedule_id == Some(id);
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::ScheduleChange,
-        rebuild.then_some(HistorySync::Rebuild),
-    )
-    .await;
+    finish_write(&state, user.sub, rebuild.then_some(HistorySync::Rebuild)).await;
     Ok(Json(schedule.into()))
 }
 
@@ -146,8 +137,6 @@ pub async fn delete_schedule(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     schedules_repo::delete(&state.db_pool, user.sub, id).await?;
-    state
-        .cache
-        .invalidate(InvalidationScope::ScheduleChange, user.sub).await;
+    finish_write(&state, user.sub, None).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }

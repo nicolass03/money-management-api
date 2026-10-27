@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use diesel::result::Error as DieselError;
+use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -12,6 +12,8 @@ pub enum ApiError {
     OnboardingRequired,
     #[error("not found")]
     NotFound,
+    #[error("rate limit exceeded")]
+    TooManyRequests,
     #[error("{0}")]
     BadRequest(String),
     #[error("database error: {0}")]
@@ -33,9 +35,15 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             ApiError::OnboardingRequired => (StatusCode::FORBIDDEN, self.to_string()),
             ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
+            ApiError::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
             ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message.clone()),
             ApiError::Database(DieselError::NotFound) => {
                 (StatusCode::NOT_FOUND, "not found".to_string())
+            }
+            // A unique index caught a duplicate write (e.g. a double-tapped "pay"): the row already
+            // exists, which is a conflict, not a server failure.
+            ApiError::Database(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+                (StatusCode::CONFLICT, "already exists".to_string())
             }
             ApiError::Database(error) => {
                 tracing::error!(%error, "database error");

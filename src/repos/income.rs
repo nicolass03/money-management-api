@@ -31,34 +31,6 @@ pub async fn list_all_with_conn(
         .map_err(ApiError::from)
 }
 
-pub async fn list_in_range(
-    pool: &DbPool,
-    user_id: Uuid,
-    from: NaiveDate,
-    to: NaiveDate,
-) -> Result<Vec<IncomeRow>, ApiError> {
-    let mut conn = connection::user_connection(pool, user_id).await?;
-    list_in_range_with_conn(&mut conn, user_id, from, to).await
-}
-
-pub async fn list_in_range_with_conn(
-    conn: &mut diesel_async::AsyncPgConnection,
-    user_id: Uuid,
-    from: NaiveDate,
-    to: NaiveDate,
-) -> Result<Vec<IncomeRow>, ApiError> {
-    income::table
-        .filter(income::user_id.eq(user_id))
-        .filter(income::deleted_at.is_null())
-        .filter(income::date.ge(from))
-        .filter(income::date.le(to))
-        .order(income::date.desc())
-        .select(IncomeRow::as_select())
-        .load(conn)
-        .await
-        .map_err(ApiError::from)
-}
-
 /// All income rows including soft-deleted tombstones. Projections need tombstones so a
 /// deleted scheduled occurrence is neither counted nor re-projected from its schedule.
 pub async fn list_with_deleted_with_conn(
@@ -221,19 +193,16 @@ pub async fn insert_scheduled(
 /// Schedule ids that already have a materialized income row on `date` — including
 /// soft-deleted tombstones — so the cron never re-creates a deleted occurrence.
 pub async fn get_materialized_schedule_ids_for_date(
-    pool: &DbPool,
+    conn: &mut diesel_async::AsyncPgConnection,
     user_id: Uuid,
-    date: &str,
+    due_date: NaiveDate,
 ) -> Result<HashSet<Uuid>, ApiError> {
-    let due_date = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .map_err(|_| ApiError::BadRequest("invalid date".into()))?;
-    let mut conn = connection::user_connection(pool, user_id).await?;
     let rows: Vec<Option<Uuid>> = income::table
         .filter(income::user_id.eq(user_id))
         .filter(income::source.eq(IncomeSource::Scheduled))
         .filter(income::date.eq(due_date))
         .select(income::schedule_id)
-        .load(&mut conn)
+        .load(conn)
         .await?;
     Ok(rows.into_iter().flatten().collect())
 }

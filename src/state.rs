@@ -25,7 +25,11 @@ pub struct AppState {
     pub rate_limit_enabled: bool,
     pub cache: Arc<UserDataCache>,
     pub loader: UserDataLoader,
+    /// Users whose `users` row is known to exist (upserted once per process).
     pub known_users: Arc<DashSet<Uuid>>,
+    /// Users known to have completed onboarding. Onboarding never reverts, so once seen it is
+    /// never re-checked, sparing every request a database round trip.
+    pub onboarded_users: Arc<DashSet<Uuid>>,
 }
 
 impl AppState {
@@ -77,6 +81,7 @@ impl AppState {
             cache,
             loader,
             known_users: Arc::new(DashSet::new()),
+            onboarded_users: Arc::new(DashSet::new()),
         })
     }
 }

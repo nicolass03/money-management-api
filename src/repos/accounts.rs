@@ -11,11 +11,6 @@ use crate::state::DbPool;
 
 /// Active (non-archived) accounts, ordered by creation. Used by the API list endpoint, the
 /// charge job's account picker, and the projection seed.
-pub async fn list_active(pool: &DbPool, user_id: Uuid) -> Result<Vec<AccountRow>, ApiError> {
-    let mut conn = connection::user_connection(pool, user_id).await?;
-    list_active_with_conn(&mut conn, user_id).await
-}
-
 pub async fn list_active_with_conn(
     conn: &mut AsyncPgConnection,
     user_id: Uuid,

@@ -329,12 +329,8 @@ pub async fn complete(
         return Err(ApiError::BadRequest("invalid budget date state".into()));
     }
 
-    let as_of_s = as_of.format("%Y-%m-%d").to_string();
-    if let Some(end) = budget.end_date {
-        let end_s = end.format("%Y-%m-%d").to_string();
-        if as_of_s > end_s {
-            return Err(ApiError::BadRequest("budget already ended".into()));
-        }
+    if budget.end_date.is_some_and(|end| as_of > end) {
+        return Err(ApiError::BadRequest("budget already ended".into()));
     }
 
     let mut conn = connection::user_connection(pool, user_id).await?;

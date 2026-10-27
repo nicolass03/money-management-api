@@ -1,10 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
+
+/// Minimum gap between JWKS fetches. Supabase rotates signing keys rarely; without a floor, every
+/// token carrying an unknown `kid` (e.g. forged ones) would trigger an outbound fetch.
+const JWKS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
@@ -46,9 +51,11 @@ struct EcKey {
 #[derive(Clone)]
 pub struct JwtValidator {
     keys: Arc<RwLock<HashMap<String, EcKey>>>,
+    /// When the JWKS was last fetched. Held across a fetch, so concurrent requests with an unknown
+    /// `kid` wait for that one fetch instead of each starting their own.
+    last_refresh: Arc<Mutex<Option<Instant>>>,
     fetch_url: String,
     issuer: String,
-    http: reqwest::Client,
 }
 
 impl JwtValidator {
@@ -56,9 +63,9 @@ impl JwtValidator {
         let base = supabase_url.trim_end_matches('/');
         Self {
             keys: Arc::new(RwLock::new(HashMap::new())),
+            last_refresh: Arc::new(Mutex::new(None)),
             fetch_url: format!("{base}/auth/v1/.well-known/jwks.json"),
             issuer: format!("{base}/auth/v1"),
-            http: reqwest::Client::new(),
         }
     }
 
@@ -66,9 +73,16 @@ impl JwtValidator {
         self.refresh().await
     }
 
-    pub async fn refresh(&self) -> Result<(), String> {
-        let jwks: Jwks = self
-            .http
+    /// Refetches the signing keys, at most once per [`JWKS_REFRESH_INTERVAL`]. A failed fetch also
+    /// counts, so an unreachable Supabase isn't retried on every request.
+    async fn refresh(&self) -> Result<(), String> {
+        let mut last_refresh = self.last_refresh.lock().await;
+        if last_refresh.is_some_and(|at| at.elapsed() < JWKS_REFRESH_INTERVAL) {
+            return Ok(());
+        }
+        *last_refresh = Some(Instant::now());
+
+        let jwks: Jwks = crate::http::client()
             .get(&self.fetch_url)
             .send()
             .await

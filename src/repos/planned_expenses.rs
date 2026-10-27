@@ -23,6 +23,7 @@ pub async fn list_all_with_conn(
 ) -> Result<Vec<PlannedExpenseRow>, ApiError> {
     planned_expenses::table
         .filter(planned_expenses::user_id.eq(user_id))
+        .filter(planned_expenses::deleted_at.is_null())
         .order(planned_expenses::date.asc())
         .select(PlannedExpenseRow::as_select())
         .load(conn)
@@ -63,6 +64,7 @@ pub async fn find_by_id(
     planned_expenses::table
         .filter(planned_expenses::user_id.eq(user_id))
         .filter(planned_expenses::id.eq(id))
+        .filter(planned_expenses::deleted_at.is_null())
         .select(PlannedExpenseRow::as_select())
         .first(&mut conn)
         .await
@@ -138,7 +140,8 @@ pub async fn update(
             let planned = diesel::update(
                 planned_expenses::table
                     .filter(planned_expenses::user_id.eq(user_id))
-                    .filter(planned_expenses::id.eq(id)),
+                    .filter(planned_expenses::id.eq(id))
+                    .filter(planned_expenses::deleted_at.is_null()),
             )
             .set((
                 planned_expenses::name.eq(name),
@@ -165,21 +168,26 @@ pub async fn update(
     .map_err(ApiError::from)
 }
 
-pub async fn delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<(), ApiError> {
+/// Soft-deletes the item (sets `deleted_at`) so a recorded payment keeps its `planned_expense_id`
+/// link and stays planned spend; a hard delete would null the link and turn it into "extra" spend.
+/// Returns whether an active item was deleted.
+pub async fn soft_delete(pool: &DbPool, user_id: Uuid, id: Uuid) -> Result<bool, ApiError> {
     let mut conn = connection::user_connection(pool, user_id).await?;
     conn.transaction(|conn| {
         Box::pin(async move {
-            let deleted = diesel::delete(
+            let deleted = diesel::update(
                 planned_expenses::table
                     .filter(planned_expenses::user_id.eq(user_id))
-                    .filter(planned_expenses::id.eq(id)),
+                    .filter(planned_expenses::id.eq(id))
+                    .filter(planned_expenses::deleted_at.is_null()),
             )
+            .set(planned_expenses::deleted_at.eq(Utc::now()))
             .execute(conn)
             .await?;
             if deleted > 0 {
                 settings::bump_cache_revision(conn, user_id).await?;
             }
-            Ok::<(), diesel::result::Error>(())
+            Ok::<bool, diesel::result::Error>(deleted > 0)
         })
     })
     .await

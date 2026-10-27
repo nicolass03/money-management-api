@@ -1,6 +1,6 @@
 use chrono::Utc;
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use diesel_async::RunQueryDsl;
 use uuid::Uuid;
 
 use crate::error::ApiError;
@@ -19,14 +19,17 @@ pub async fn get_user_settings_with_conn(
     conn: &mut AsyncPgConnection,
     user_id: Uuid,
 ) -> Result<UserSettingsRow, ApiError> {
-    if let Ok(row) = user_settings::table
+    if let Some(row) = user_settings::table
         .find(user_id)
         .select(UserSettingsRow::as_select())
         .first(conn)
         .await
+        .optional()?
     {
         return Ok(row);
     }
+
+    // First access: create the defaults row (a concurrent request may win the race).
 
     let now = Utc::now();
     diesel::insert_into(user_settings::table)
@@ -49,6 +52,9 @@ pub async fn get_user_settings_with_conn(
         .map_err(ApiError::from)
 }
 
+/// Fields to change; `None` leaves a field untouched, `Some(None)` clears a nullable one.
+#[derive(AsChangeset)]
+#[diesel(table_name = user_settings)]
 pub struct UserSettingsPatch {
     pub display_currency: Option<CurrencyCode>,
     pub language: Option<String>,
@@ -59,76 +65,25 @@ pub struct UserSettingsPatch {
     pub theme: Option<String>,
 }
 
+/// Applies `patch` and bumps `cache_revision` in a single UPDATE.
 pub async fn update_user_settings(
     pool: &DbPool,
     user_id: Uuid,
     patch: UserSettingsPatch,
 ) -> Result<UserSettingsRow, ApiError> {
-    get_user_settings(pool, user_id).await?;
     let mut conn = connection::user_connection(pool, user_id).await?;
-    let now = Utc::now();
-
-    conn.transaction(|conn| {
-        Box::pin(async move {
-            if let Some(currency) = patch.display_currency {
-                diesel::update(user_settings::table.find(user_id))
-                    .set(user_settings::display_currency.eq(currency))
-                    .execute(conn)
-                    .await?;
-            }
-            if let Some(language) = patch.language {
-                diesel::update(user_settings::table.find(user_id))
-                    .set(user_settings::language.eq(language))
-                    .execute(conn)
-                    .await?;
-            }
-            if let Some(schedule_id) = patch.primary_schedule_id {
-                diesel::update(user_settings::table.find(user_id))
-                    .set(user_settings::primary_schedule_id.eq(schedule_id))
-                    .execute(conn)
-                    .await?;
-            }
-            if let Some(start_date) = patch.projection_start_date {
-                diesel::update(user_settings::table.find(user_id))
-                    .set(user_settings::projection_start_date.eq(start_date))
-                    .execute(conn)
-                    .await?;
-            }
-            if let Some(end_date) = patch.projection_end_date {
-                diesel::update(user_settings::table.find(user_id))
-                    .set(user_settings::projection_end_date.eq(end_date))
-                    .execute(conn)
-                    .await?;
-            }
-            if let Some(limit) = patch.extra_spent_limit {
-                diesel::update(user_settings::table.find(user_id))
-                    .set(user_settings::extra_spent_limit.eq(limit))
-                    .execute(conn)
-                    .await?;
-            }
-            if let Some(theme) = patch.theme {
-                diesel::update(user_settings::table.find(user_id))
-                    .set(user_settings::theme.eq(theme))
-                    .execute(conn)
-                    .await?;
-            }
-
-            diesel::update(user_settings::table.find(user_id))
-                .set(user_settings::updated_at.eq(now))
-                .execute(conn)
-                .await?;
-
-            bump_cache_revision(conn, user_id).await?;
-
-            user_settings::table
-                .find(user_id)
-                .select(UserSettingsRow::as_select())
-                .first(conn)
-                .await
-        })
-    })
-    .await
-    .map_err(ApiError::from)
+    // Make sure the row exists before updating it.
+    get_user_settings_with_conn(&mut conn, user_id).await?;
+    diesel::update(user_settings::table.find(user_id))
+        .set((
+            patch,
+            user_settings::updated_at.eq(Utc::now()),
+            user_settings::cache_revision.eq(user_settings::cache_revision + 1),
+        ))
+        .returning(UserSettingsRow::as_returning())
+        .get_result(&mut conn)
+        .await
+        .map_err(ApiError::from)
 }
 
 /// Increments `cache_revision` so revision-keyed caches miss after writes.

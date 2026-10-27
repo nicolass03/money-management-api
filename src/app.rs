@@ -7,6 +7,7 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use tower::ServiceBuilder;
 use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::key_extractor::SmartIpKeyExtractor;
 use tower_governor::GovernorLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
@@ -25,7 +26,9 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
         move |request: Request<Body>, next: Next| async move {
             match tokio::time::timeout(request_timeout, next.run(request)).await {
                 Ok(response) => Ok(response),
-                Err(_) => Err(StatusCode::REQUEST_TIMEOUT),
+                // The server ran past its deadline: a server-side failure (503), not a slow
+                // client (408).
+                Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE),
             }
         },
     );
@@ -181,9 +184,13 @@ pub fn build_app(config: &Config, state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let protected = if config.rate_limit_enabled {
+        // Per client IP: bursts of 200, refilling one request every 10 ms (100 req/s). The client IP
+        // comes from the proxy headers Railway's edge overwrites; the peer address would be the
+        // proxy's, putting every user in one bucket.
         let governor_conf = Arc::new(
             GovernorConfigBuilder::default()
-                .per_second(100)
+                .key_extractor(SmartIpKeyExtractor)
+                .per_millisecond(10)
                 .burst_size(200)
                 .finish()
                 .expect("valid governor config"),

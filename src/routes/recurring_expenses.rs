@@ -3,12 +3,11 @@ use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
-use crate::cache::InvalidationScope;
 use crate::dto::{CreateRecurringExpenseRequest, UpdateRecurringExpenseRequest};
 use crate::error::ApiError;
 use crate::models::{recurring_to_response, RecurringExpenseResponse};
 use crate::repos::recurring_expenses as recurring_repo;
-use crate::routes::helpers::{resolve_account, resolve_account_for_update};
+use crate::routes::helpers::{finish_write, resolve_account, resolve_account_for_update};
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, parse_pay_frequency, parse_tag_names, require_non_empty_name,
@@ -42,8 +41,7 @@ fn validate_recurring(
         Some(value) => {
             let date = parse_date(value)
                 .map_err(|_| ApiError::BadRequest("invalid last payment date".into()))?;
-            let anchor_s = anchor_date.format("%Y-%m-%d").to_string();
-            if value < &anchor_s {
+            if date < anchor_date {
                 return Err(ApiError::BadRequest(
                     "last payment date must be on or after anchor date".into(),
                 ));
@@ -74,8 +72,8 @@ pub async fn list_recurring(
         .recurring_with_tags(user.sub, settings.cache_revision)
         .await?;
     Ok(Json(
-        rows.into_iter()
-            .map(|(row, tags)| recurring_to_response(row, tags))
+        rows.iter()
+            .map(|(row, tags)| recurring_to_response(row.clone(), tags.clone()))
             .collect(),
     ))
 }
@@ -105,9 +103,7 @@ pub async fn create_recurring(
         account_id,
     )
     .await?;
-    state
-        .cache
-        .invalidate(InvalidationScope::RecurringChange, user.sub).await;
+    finish_write(&state, user.sub, None).await;
     Ok(Json(recurring_to_response(row, tags)))
 }
 
@@ -168,9 +164,7 @@ pub async fn update_recurring(
     )
     .await?
     .ok_or(ApiError::NotFound)?;
-    state
-        .cache
-        .invalidate(InvalidationScope::RecurringChange, user.sub).await;
+    finish_write(&state, user.sub, None).await;
     Ok(Json(recurring_to_response(row, tags)))
 }
 
@@ -184,9 +178,7 @@ pub async fn enable_cancel_reminder(
     let row = recurring_repo::set_cancel_reminder(&state.db_pool, user.sub, id, true)
         .await?
         .ok_or(ApiError::NotFound)?;
-    state
-        .cache
-        .invalidate(InvalidationScope::RecurringChange, user.sub).await;
+    finish_write(&state, user.sub, None).await;
     let (_, tags) = recurring_repo::find_with_tags(&state.db_pool, user.sub, id)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -202,9 +194,7 @@ pub async fn disable_cancel_reminder(
     recurring_repo::set_cancel_reminder(&state.db_pool, user.sub, id, false)
         .await?
         .ok_or(ApiError::NotFound)?;
-    state
-        .cache
-        .invalidate(InvalidationScope::RecurringChange, user.sub).await;
+    finish_write(&state, user.sub, None).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -214,8 +204,6 @@ pub async fn delete_recurring(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     recurring_repo::delete(&state.db_pool, user.sub, id).await?;
-    state
-        .cache
-        .invalidate(InvalidationScope::RecurringChange, user.sub).await;
+    finish_write(&state, user.sub, None).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }

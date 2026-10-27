@@ -15,8 +15,7 @@ use crate::services::expense_period::{
     GetExpenseItemsOptions,
 };
 use crate::services::pay_periods::{
-    get_pay_dates_in_range, get_projection_periods, is_date_in_period, schedule_from_income,
-    PayPeriod,
+    get_pay_dates_in_range, get_projection_periods, schedule_from_income, PayPeriod,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,6 +29,9 @@ pub struct ProjectionExpenseItem {
     pub planned_expense_id: Option<uuid::Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_id: Option<uuid::Uuid>,
+    /// Source account of a recorded expense (lets clients open it in an edit form).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<uuid::Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_total: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,9 +39,9 @@ pub struct ProjectionExpenseItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_budget_summary: Option<bool>,
     pub name: String,
-    pub date: String,
+    pub date: NaiveDate,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scheduled_date: Option<String>,
+    pub scheduled_date: Option<NaiveDate>,
     pub amount: i32,
     pub currency: CurrencyCode,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -75,9 +77,9 @@ pub(crate) fn sort_projection_expense_items(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectionRow {
-    pub pay_date: String,
-    pub start_date: String,
-    pub end_date: String,
+    pub pay_date: NaiveDate,
+    pub start_date: NaiveDate,
+    pub end_date: NaiveDate,
     pub income_total: i64,
     pub expense_total: i64,
     pub period_free: i64,
@@ -106,17 +108,12 @@ pub struct ProjectionInputs {
     pub projection_end_date: Option<NaiveDate>,
 }
 
-fn is_on_or_after_start_date(date: &str, start_date: Option<&str>) -> bool {
-    start_date.is_none_or(|start| date >= start)
-}
-
-fn effective_period_start(period: &PayPeriod, projection_start_date: Option<&str>) -> String {
-    if let Some(start) = projection_start_date {
-        if start > period.start_date.as_str() && start <= period.end_date.as_str() {
-            return start.to_string();
-        }
-    }
-    period.start_date.clone()
+/// The period's start, or the projection start date when it falls inside the period (the opening
+/// partial period).
+fn effective_period_start(period: &PayPeriod, projection_start_date: Option<NaiveDate>) -> NaiveDate {
+    projection_start_date
+        .filter(|start| *start > period.start_date && *start <= period.end_date)
+        .unwrap_or(period.start_date)
 }
 
 /// Persisted (non-deleted) income dated inside `period`, in display currency.
@@ -128,8 +125,7 @@ fn sum_income_in_period(
 ) -> i64 {
     entries
         .iter()
-        .filter(|entry| entry.deleted_at.is_none())
-        .filter(|entry| is_date_in_period(&entry.date.format("%Y-%m-%d").to_string(), period))
+        .filter(|entry| entry.deleted_at.is_none() && period.contains(entry.date))
         .map(|entry| i64::from(convert_amount(entry.amount, entry.currency, display_currency, rates)))
         .sum()
 }
@@ -154,19 +150,13 @@ fn projected_income_in_period(
     materialized: &HashSet<(Uuid, NaiveDate)>,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
-    today: &str,
+    today: NaiveDate,
 ) -> i64 {
     let mut total = 0;
     for schedule in schedules {
         let input = schedule_from_income(schedule);
-        for date_str in get_pay_dates_in_range(&input, &period.start_date, &period.end_date) {
-            if date_str.as_str() < today {
-                continue;
-            }
-            let Ok(date) = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") else {
-                continue;
-            };
-            if materialized.contains(&(schedule.id, date)) {
+        for date in get_pay_dates_in_range(&input, period.start_date, period.end_date) {
+            if date < today || materialized.contains(&(schedule.id, date)) {
                 continue;
             }
             total += i64::from(convert_amount(
@@ -187,17 +177,13 @@ fn projected_income_in_period(
 pub fn build_projection_rows(
     inputs: &ProjectionInputs,
     opening_balance: i64,
-    projection_start_date: Option<&str>,
-    projection_end_date: Option<&str>,
-    today: &str,
+    projection_start_date: Option<NaiveDate>,
+    projection_end_date: Option<NaiveDate>,
+    today: NaiveDate,
 ) -> Vec<ProjectionRow> {
     let schedule = schedule_from_income(&inputs.primary_schedule);
-    let periods = get_projection_periods(
-        &schedule,
-        Some(today),
-        projection_start_date,
-        projection_end_date,
-    );
+    let periods =
+        get_projection_periods(&schedule, today, projection_start_date, projection_end_date);
 
     let expense_list = to_expense_with_tags(&inputs.expenses);
     let recurring_list = to_recurring_with_tags(&inputs.recurring);
@@ -213,7 +199,7 @@ pub fn build_projection_rows(
     periods
         .into_iter()
         .map(|period| {
-            let is_past = period.pay_date.as_str() < today;
+            let is_past = period.pay_date < today;
             // For the opening period (projection starts mid-period) this is the projection start
             // date, so only expenses dated on or after it count.
             let period_start_date = effective_period_start(&period, projection_start_date);
@@ -251,7 +237,7 @@ pub fn build_projection_rows(
                 },
             )
             .into_iter()
-            .filter(|item| is_on_or_after_start_date(&item.date, Some(&period_start_date)))
+            .filter(|item| item.date >= period_start_date)
             .collect::<Vec<_>>();
 
             let expense_total: i64 = expense_items
@@ -286,6 +272,10 @@ mod tests {
     use crate::models::{IncomeSource, PayFrequency};
     use chrono::Utc;
     use std::collections::HashMap;
+
+    fn date(value: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(value, "%Y-%m-%d").unwrap()
+    }
 
     fn empty_rates() -> ExchangeRates {
         ExchangeRates {
@@ -342,14 +332,14 @@ mod tests {
             projection_start_date: None,
             projection_end_date: None,
         };
-        build_projection_rows(&inputs, 0, None, None, "2026-06-01")
+        build_projection_rows(&inputs, 0, None, None, date("2026-06-01"))
     }
 
     #[test]
     fn future_occurrence_is_projected_when_not_materialized() {
         let sched = schedule("2026-01-15", 100_000);
         let rows = build(&sched, &[]);
-        assert_eq!(rows[0].pay_date, "2026-06-15");
+        assert_eq!(rows[0].pay_date, date("2026-06-15"));
         assert_eq!(rows[0].income_total, 100_000);
     }
 
@@ -359,7 +349,7 @@ mod tests {
         // Amount overridden after materialization; projection must use the actual row, not re-project.
         let income = vec![scheduled_income(sched.id, "2026-06-15", 120_000, false)];
         let rows = build(&sched, &income);
-        assert_eq!(rows[0].pay_date, "2026-06-15");
+        assert_eq!(rows[0].pay_date, date("2026-06-15"));
         assert_eq!(rows[0].income_total, 120_000);
     }
 
@@ -368,7 +358,7 @@ mod tests {
         let sched = schedule("2026-01-15", 100_000);
         let income = vec![scheduled_income(sched.id, "2026-06-15", 100_000, true)];
         let rows = build(&sched, &income);
-        assert_eq!(rows[0].pay_date, "2026-06-15");
+        assert_eq!(rows[0].pay_date, date("2026-06-15"));
         assert_eq!(rows[0].income_total, 0);
     }
 }

@@ -1,11 +1,15 @@
+use std::future::Future;
+use std::hash::Hash;
 use std::sync::Arc;
 
+use chrono::NaiveDate;
 use uuid::Uuid;
 
 use crate::dto::{MoneyContextResponse, ProjectionsResponse};
 use crate::error::ApiError;
 use crate::models::{
-    IncomePayScheduleResponse, ProjectionHistoryRow, UserSettingsRow,
+    IncomePayScheduleResponse, IncomePayScheduleRow, IncomeRow, ProjectionHistoryRow,
+    UserSettingsRow,
 };
 use crate::repos::{
     budgets, connection, expenses, income, income_schedules, planned_expenses,
@@ -22,7 +26,10 @@ use crate::services::upcoming_payable::{build_upcoming_payable_items, PayableFut
 use crate::state::DbPool;
 use crate::validation::resolve_reference_date;
 
-use super::user_data_cache::UserDataCache;
+use super::user_data_cache::{
+    BudgetsWithTagsAndSpent, ExpensesWithTags, PlannedWithTags, RecurringWithTags, UserCache,
+    UserDataCache,
+};
 
 #[derive(Clone)]
 pub struct UserDataLoader {
@@ -30,146 +37,142 @@ pub struct UserDataLoader {
     cache: Arc<UserDataCache>,
 }
 
+/// Serves `key` from `cache`, else runs `load`, caches its result and returns it. Values are
+/// shared (`Arc`), so a hit never copies the data.
+async fn cached<K, V>(
+    cache: &UserCache<K, V>,
+    user_id: Uuid,
+    key: K,
+    load: impl Future<Output = Result<V, ApiError>>,
+) -> Result<Arc<V>, ApiError>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static,
+    V: Send + Sync + 'static,
+{
+    if let Some(hit) = cache.get(user_id, key.clone()).await {
+        return Ok(hit);
+    }
+    let value = Arc::new(load.await?);
+    cache.insert(user_id, key, value.clone()).await;
+    Ok(value)
+}
+
 impl UserDataLoader {
     pub fn new(pool: DbPool, cache: Arc<UserDataCache>) -> Self {
         Self { pool, cache }
     }
 
-    /// Returns the user's settings row — carrying the current `cache_revision` that keys
-    /// every other cache — served from memory on a warm path so cache-backed reads need
-    /// **zero** database round-trips. Eviction happens on every mutation (see
-    /// `UserDataCache::invalidate`), with a short TTL as a safety net.
-    async fn current_settings(&self, user_id: Uuid) -> Result<Arc<UserSettingsRow>, ApiError> {
-        if let Some(cached) = self.cache.get_settings(user_id).await {
-            return Ok(cached);
-        }
-        let row = Arc::new(settings::get_user_settings(&self.pool, user_id).await?);
-        self.cache.set_settings(user_id, row.clone()).await;
-        Ok(row)
-    }
-
-    pub async fn user_settings(&self, user_id: Uuid) -> Result<UserSettingsRow, ApiError> {
-        Ok((*self.current_settings(user_id).await?).clone())
+    /// The user's settings row — carrying the current `cache_revision` that keys every other
+    /// cache — served from memory on a warm path so cache-backed reads need **zero** database
+    /// round trips. Evicted on every write (see `UserDataCache::invalidate`).
+    pub async fn user_settings(&self, user_id: Uuid) -> Result<Arc<UserSettingsRow>, ApiError> {
+        cached(
+            &self.cache.settings,
+            user_id,
+            (),
+            settings::get_user_settings(&self.pool, user_id),
+        )
+        .await
     }
 
     pub async fn expenses_with_tags(
         &self,
         user_id: Uuid,
         revision: i64,
-    ) -> Result<super::user_data_cache::ExpensesWithTags, ApiError> {
-        if let Some(cached) = self.cache.get_expenses(user_id, revision).await {
-            return Ok((*cached).clone());
-        }
-        let data = expenses::list_with_tags(&self.pool, user_id).await?;
-        self.cache.set_expenses(user_id, revision, data.clone()).await;
-        Ok(data)
+    ) -> Result<Arc<ExpensesWithTags>, ApiError> {
+        let load = expenses::list_with_tags(&self.pool, user_id);
+        cached(&self.cache.expenses, user_id, revision, load).await
     }
 
     pub async fn recurring_with_tags(
         &self,
         user_id: Uuid,
         revision: i64,
-    ) -> Result<super::user_data_cache::RecurringWithTags, ApiError> {
-        if let Some(cached) = self.cache.get_recurring(user_id, revision).await {
-            return Ok((*cached).clone());
-        }
-        let data = recurring_expenses::list_with_tags(&self.pool, user_id).await?;
-        self.cache
-            .set_recurring(user_id, revision, data.clone())
-            .await;
-        Ok(data)
+    ) -> Result<Arc<RecurringWithTags>, ApiError> {
+        let load = recurring_expenses::list_with_tags(&self.pool, user_id);
+        cached(&self.cache.recurring, user_id, revision, load).await
     }
 
     pub async fn planned_with_tags(
         &self,
         user_id: Uuid,
         revision: i64,
-    ) -> Result<super::user_data_cache::PlannedWithTags, ApiError> {
-        if let Some(cached) = self.cache.get_planned(user_id, revision).await {
-            return Ok((*cached).clone());
-        }
-        let data = planned_expenses::list_with_tags(&self.pool, user_id).await?;
-        self.cache.set_planned(user_id, revision, data.clone()).await;
-        Ok(data)
+    ) -> Result<Arc<PlannedWithTags>, ApiError> {
+        let load = planned_expenses::list_with_tags(&self.pool, user_id);
+        cached(&self.cache.planned, user_id, revision, load).await
     }
 
     pub async fn budgets_with_tags_and_spent(
         &self,
         user_id: Uuid,
         revision: i64,
-    ) -> Result<super::user_data_cache::BudgetsWithTagsAndSpent, ApiError> {
-        if let Some(cached) = self.cache.get_budgets(user_id, revision).await {
-            return Ok((*cached).clone());
-        }
-        let data = budgets::list_with_tags_and_spent(&self.pool, user_id).await?;
-        self.cache.set_budgets(user_id, revision, data.clone()).await;
-        Ok(data)
+    ) -> Result<Arc<BudgetsWithTagsAndSpent>, ApiError> {
+        let load = budgets::list_with_tags_and_spent(&self.pool, user_id);
+        cached(&self.cache.budgets, user_id, revision, load).await
     }
 
+    /// Active (non-deleted) income rows.
     pub async fn income_list(
         &self,
         user_id: Uuid,
         revision: i64,
-    ) -> Result<Vec<crate::models::IncomeRow>, ApiError> {
-        if let Some(cached) = self.cache.get_income(user_id, revision).await {
-            return Ok((*cached).clone());
-        }
-        let data = income::list_all(&self.pool, user_id).await?;
-        self.cache.set_income(user_id, revision, data.clone()).await;
-        Ok(data)
+    ) -> Result<Arc<Vec<IncomeRow>>, ApiError> {
+        let load = income::list_all(&self.pool, user_id);
+        cached(&self.cache.income, user_id, revision, load).await
     }
 
     pub async fn schedules_list(
         &self,
         user_id: Uuid,
         revision: i64,
-    ) -> Result<Vec<crate::models::IncomePayScheduleRow>, ApiError> {
-        if let Some(cached) = self.cache.get_schedules(user_id, revision).await {
-            return Ok((*cached).clone());
-        }
-        let data = income_schedules::list_all(&self.pool, user_id).await?;
-        self.cache
-            .set_schedules(user_id, revision, data.clone())
-            .await;
-        Ok(data)
+    ) -> Result<Arc<Vec<IncomePayScheduleRow>>, ApiError> {
+        let load = income_schedules::list_all(&self.pool, user_id);
+        cached(&self.cache.schedules, user_id, revision, load).await
     }
 
-    pub async fn tag_names(
+    /// The user's primary pay schedule, if set (from the cached schedule list).
+    pub async fn primary_schedule(
         &self,
         user_id: Uuid,
-        revision: i64,
-    ) -> Result<Vec<String>, ApiError> {
-        if let Some(cached) = self.cache.get_tags(user_id, revision).await {
-            return Ok((*cached).clone());
-        }
-        let mut conn = connection::user_connection(&self.pool, user_id).await?;
-        let data = tags::list_all_names(&mut conn, user_id).await?;
-        self.cache.set_tags(user_id, revision, data.clone()).await;
-        Ok(data)
+        settings: &UserSettingsRow,
+    ) -> Result<Option<IncomePayScheduleRow>, ApiError> {
+        let Some(schedule_id) = settings.primary_schedule_id else {
+            return Ok(None);
+        };
+        let schedules = self.schedules_list(user_id, settings.cache_revision).await?;
+        Ok(schedules.iter().find(|schedule| schedule.id == schedule_id).cloned())
     }
 
+    pub async fn tag_names(&self, user_id: Uuid, revision: i64) -> Result<Arc<Vec<String>>, ApiError> {
+        let load = async {
+            let mut conn = connection::user_connection(&self.pool, user_id).await?;
+            Ok(tags::list_all_names(&mut conn, user_id).await?)
+        };
+        cached(&self.cache.tags, user_id, revision, load).await
+    }
+
+    /// Display currency + exchange rates. A forced refresh refetches the rates and replaces the
+    /// cached entry, so later non-forced reads don't keep serving the old rates.
     pub async fn money_context(
         &self,
         user_id: Uuid,
-        revision: i64,
         force_refresh: bool,
     ) -> Result<Arc<MoneyContextResponse>, ApiError> {
+        let user_settings = self.user_settings(user_id).await?;
+        let revision = user_settings.cache_revision;
         if !force_refresh {
-            if let Some(cached) = self.cache.get_money_context(user_id, revision).await {
-                return Ok(cached);
+            if let Some(hit) = self.cache.money_context.get(user_id, revision).await {
+                return Ok(hit);
             }
         }
-        let user_settings = self.current_settings(user_id).await?;
-        let rates = get_exchange_rates(&self.pool, force_refresh).await?;
         let response = Arc::new(MoneyContextResponse {
             display_currency: user_settings.display_currency,
-            rates,
+            rates: get_exchange_rates(&self.pool, force_refresh).await?,
         });
-        if !force_refresh {
-            self.cache
-                .set_money_context(user_id, revision, response.clone())
-                .await;
-        }
+        self.cache
+            .money_context
+            .insert(user_id, revision, response.clone())
+            .await;
         Ok(response)
     }
 
@@ -179,16 +182,12 @@ impl UserDataLoader {
         include_past: bool,
         as_of: Option<&str>,
     ) -> Result<Arc<ProjectionsResponse>, ApiError> {
-        let user_settings = self.current_settings(user_id).await?;
-        let revision = user_settings.cache_revision;
+        let revision = self.user_settings(user_id).await?.cache_revision;
         let reference_date = resolve_reference_date(as_of)?;
+        let key = (revision, reference_date);
 
-        if let Some(cached) = self
-            .cache
-            .get_projections(user_id, revision, &reference_date)
-            .await
-        {
-            return Ok(filter_projection_rows(cached, include_past));
+        if let Some(hit) = self.cache.projections.get(user_id, key).await {
+            return Ok(filter_projection_rows(hit, include_past));
         }
 
         let inputs = self.projection_inputs(user_id).await?;
@@ -213,40 +212,39 @@ impl UserDataLoader {
         };
 
         let mut rows: Vec<ProjectionRow> = history.iter().map(history_row_to_projection).collect();
-        rows.extend(build_rows_after(&inputs, history.last(), &reference_date));
+        rows.extend(build_rows_after(&inputs, history.last(), reference_date));
 
-        // Warm the per-resource caches from the lists just loaded, so the views that read them
+        // Warm the per-resource caches with the lists just loaded, so the views that read them
         // right after (period view, upcoming payable) don't reload them.
-        let income_active: Vec<_> = inputs
-            .income_all
-            .iter()
+        let ProjectionInputs {
+            primary_schedule,
+            income_all,
+            expenses,
+            recurring,
+            planned,
+            budgets,
+            display_currency,
+            rates,
+            ..
+        } = inputs;
+        let income_active: Vec<IncomeRow> = income_all
+            .into_iter()
             .filter(|row| row.deleted_at.is_none())
-            .cloned()
             .collect();
-        self.cache.set_income(user_id, revision, income_active).await;
-        self.cache
-            .set_expenses(user_id, revision, inputs.expenses.clone())
-            .await;
-        self.cache
-            .set_recurring(user_id, revision, inputs.recurring.clone())
-            .await;
-        self.cache
-            .set_planned(user_id, revision, inputs.planned.clone())
-            .await;
-        self.cache
-            .set_budgets(user_id, revision, inputs.budgets.clone())
-            .await;
+        let cache = &self.cache;
+        cache.income.insert(user_id, revision, Arc::new(income_active)).await;
+        cache.expenses.insert(user_id, revision, Arc::new(expenses)).await;
+        cache.recurring.insert(user_id, revision, Arc::new(recurring)).await;
+        cache.planned.insert(user_id, revision, Arc::new(planned)).await;
+        cache.budgets.insert(user_id, revision, Arc::new(budgets)).await;
 
         let response = Arc::new(ProjectionsResponse {
             rows,
-            primary_schedule: IncomePayScheduleResponse::from(inputs.primary_schedule),
-            display_currency: inputs.display_currency,
-            rates: inputs.rates,
+            primary_schedule: IncomePayScheduleResponse::from(primary_schedule),
+            display_currency,
+            rates,
         });
-
-        self.cache
-            .set_projections(user_id, revision, &reference_date, response.clone())
-            .await;
+        cache.projections.insert(user_id, key, response.clone()).await;
 
         Ok(filter_projection_rows(response, include_past))
     }
@@ -266,7 +264,7 @@ impl UserDataLoader {
     pub async fn projection_period_items(
         &self,
         user_id: Uuid,
-        pay_date: &str,
+        pay_date: NaiveDate,
         as_of: Option<&str>,
     ) -> Result<Arc<ProjectionRow>, ApiError> {
         let reference_date = resolve_reference_date(as_of)?;
@@ -278,20 +276,18 @@ impl UserDataLoader {
         }
         let period = get_period_for_pay_date(&schedule, pay_date);
         // Keep the opening period's mid-period start, so its items match the projection's row.
-        let projection_start = inputs
+        if inputs
             .projection_start_date
-            .map(|date| date.format("%Y-%m-%d").to_string());
-        if projection_start
-            .as_deref()
-            .is_some_and(|start| start > period.end_date.as_str())
+            .is_some_and(|start| start > period.end_date)
         {
             return Err(ApiError::NotFound);
         }
-        let start = projection_start
-            .filter(|start| start.as_str() > period.start_date.as_str())
+        let start = inputs
+            .projection_start_date
+            .filter(|start| *start > period.start_date)
             .unwrap_or(period.start_date);
 
-        let row = build_projection_rows(&inputs, 0, Some(&start), Some(pay_date), &reference_date)
+        let row = build_projection_rows(&inputs, 0, Some(start), Some(pay_date), reference_date)
             .into_iter()
             .find(|row| row.pay_date == pay_date)
             .ok_or(ApiError::NotFound)?;
@@ -309,63 +305,39 @@ impl UserDataLoader {
             ApiError::BadRequest("invalid period; use last-period, last-month, or last-3-months".into())
         })?;
 
-        let user_settings = self.current_settings(user_id).await?;
+        let user_settings = self.user_settings(user_id).await?;
         let revision = user_settings.cache_revision;
         let reference_date = resolve_reference_date(as_of)?;
+        let key = (revision, period.to_string(), include_projected, reference_date);
 
-        if let Some(cached) = self
-            .cache
-            .get_expense_period_view(user_id, revision, period, include_projected, &reference_date)
-            .await
-        {
-            return Ok(cached);
-        }
+        let load = async {
+            let rates = get_exchange_rates(&self.pool, false).await?;
+            let primary_schedule = self.primary_schedule(user_id, &user_settings).await?;
+            let expense_rows = self.expenses_with_tags(user_id, revision).await?;
+            let recurring = self.recurring_with_tags(user_id, revision).await?;
+            let planned = self.planned_with_tags(user_id, revision).await?;
+            let budgets = self.budgets_with_tags_and_spent(user_id, revision).await?;
 
-        let rates = get_exchange_rates(&self.pool, false).await?;
-        let display_currency = user_settings.display_currency;
-
-        let primary_schedule = if let Some(schedule_id) = user_settings.primary_schedule_id {
-            let mut conn = connection::user_connection(&self.pool, user_id).await?;
-            income_schedules::find_by_id_with_conn(&mut conn, user_id, schedule_id).await?
-        } else {
-            None
-        };
-
-        let expense_rows = self.expenses_with_tags(user_id, revision).await?;
-        let recurring = self.recurring_with_tags(user_id, revision).await?;
-        let planned = self.planned_with_tags(user_id, revision).await?;
-        let budgets = self.budgets_with_tags_and_spent(user_id, revision).await?;
-
-        let response = build_expense_period_view(
-            period_key,
-            primary_schedule.as_ref(),
-            &expense_rows,
-            &recurring,
-            &planned,
-            &budgets,
-            display_currency,
-            &rates,
-            &reference_date,
-            include_projected,
-            user_settings.extra_spent_limit,
-        )
-        .ok_or_else(|| {
-            ApiError::BadRequest("set a primary pay schedule in settings for pay-period view".into())
-        })?;
-        let response = Arc::new(response);
-
-        self.cache
-            .set_expense_period_view(
-                user_id,
-                revision,
-                period,
+            build_expense_period_view(
+                period_key,
+                primary_schedule.as_ref(),
+                &expense_rows,
+                &recurring,
+                &planned,
+                &budgets,
+                user_settings.display_currency,
+                &rates,
+                reference_date,
                 include_projected,
-                &reference_date,
-                response.clone(),
+                user_settings.extra_spent_limit,
             )
-            .await;
-
-        Ok(response)
+            .ok_or_else(|| {
+                ApiError::BadRequest(
+                    "set a primary pay schedule in settings for pay-period view".into(),
+                )
+            })
+        };
+        cached(&self.cache.expense_period_view, user_id, key, load).await
     }
 
     pub async fn upcoming_payable(
@@ -374,35 +346,23 @@ impl UserDataLoader {
         horizon_days: i32,
         as_of: Option<&str>,
     ) -> Result<Arc<Vec<PayableFutureItem>>, ApiError> {
-        let user_settings = self.current_settings(user_id).await?;
-        let revision = user_settings.cache_revision;
+        let revision = self.user_settings(user_id).await?.cache_revision;
         let reference_date = resolve_reference_date(as_of)?;
+        let key = (revision, horizon_days, reference_date);
 
-        if let Some(cached) = self
-            .cache
-            .get_upcoming_payable(user_id, revision, horizon_days, &reference_date)
-            .await
-        {
-            return Ok(cached);
-        }
-
-        let expense_rows = self.expenses_with_tags(user_id, revision).await?;
-        let recurring = self.recurring_with_tags(user_id, revision).await?;
-        let planned = self.planned_with_tags(user_id, revision).await?;
-
-        let items = Arc::new(build_upcoming_payable_items(
-            &expense_rows,
-            &recurring,
-            &planned,
-            &reference_date,
-            horizon_days,
-        ));
-
-        self.cache
-            .set_upcoming_payable(user_id, revision, horizon_days, &reference_date, items.clone())
-            .await;
-
-        Ok(items)
+        let load = async {
+            let expense_rows = self.expenses_with_tags(user_id, revision).await?;
+            let recurring = self.recurring_with_tags(user_id, revision).await?;
+            let planned = self.planned_with_tags(user_id, revision).await?;
+            Ok(build_upcoming_payable_items(
+                &expense_rows,
+                &recurring,
+                &planned,
+                reference_date,
+                horizon_days,
+            ))
+        };
+        cached(&self.cache.upcoming_payable, user_id, key, load).await
     }
 }
 
@@ -410,9 +370,9 @@ impl UserDataLoader {
 /// fetches the per-item breakdown for an opened past period via a separate query.
 fn history_row_to_projection(row: &ProjectionHistoryRow) -> ProjectionRow {
     ProjectionRow {
-        pay_date: row.pay_date.format("%Y-%m-%d").to_string(),
-        start_date: row.start_date.format("%Y-%m-%d").to_string(),
-        end_date: row.end_date.format("%Y-%m-%d").to_string(),
+        pay_date: row.pay_date,
+        start_date: row.start_date,
+        end_date: row.end_date,
         income_total: row.income,
         expense_total: row.planned_spent,
         period_free: row.free,

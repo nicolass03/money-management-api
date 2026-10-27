@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use chrono::NaiveDate;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -13,12 +14,11 @@ use crate::services::budget_status::{
 };
 use crate::services::currency::{convert_amount, ExchangeRates};
 use crate::services::materialization::{
-    build_planned_materialized_set, build_recurring_materialized_set, is_planned_expense_materialized,
-    is_recurring_occurrence_materialized, recurring_due_date,
+    build_planned_materialized_set, build_recurring_materialized_set,
 };
 use crate::services::pay_periods::{
-    add_months, get_pay_dates_in_range, get_period_containing, is_date_in_period,
-    schedule_from_income, schedule_from_recurring, PayPeriod,
+    add_months, get_pay_dates_in_range, get_period_containing, schedule_from_income,
+    schedule_from_recurring, PayPeriod,
 };
 use crate::services::projections::{sort_projection_expense_items, ProjectionExpenseItem};
 
@@ -61,9 +61,9 @@ pub struct ExpensePeriodViewResponse {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PayPeriodResponse {
-    pub pay_date: String,
-    pub start_date: String,
-    pub end_date: String,
+    pub pay_date: NaiveDate,
+    pub start_date: NaiveDate,
+    pub end_date: NaiveDate,
 }
 
 impl From<PayPeriod> for PayPeriodResponse {
@@ -133,7 +133,7 @@ pub(crate) enum ExpenseItemSort {
 }
 
 pub(crate) struct ExpensePeriodMaterialized {
-    pub recurring_materialized: HashSet<String>,
+    pub recurring_materialized: HashSet<(Uuid, NaiveDate)>,
     pub planned_materialized: HashSet<Uuid>,
     pub dated_budget_ids: HashSet<Uuid>,
 }
@@ -141,24 +141,15 @@ pub(crate) struct ExpensePeriodMaterialized {
 pub fn resolve_period_dates(
     period_key: ExpensePeriodKey,
     primary_schedule: Option<&IncomePayScheduleRow>,
-    today: &str,
+    today: NaiveDate,
 ) -> Option<PayPeriod> {
     match period_key {
         ExpensePeriodKey::LastPeriod => {
             let schedule = primary_schedule?;
-            let input = schedule_from_income(schedule);
-            Some(get_period_containing(&input, today))
+            Some(get_period_containing(&schedule_from_income(schedule), today))
         }
-        ExpensePeriodKey::LastMonth => Some(PayPeriod {
-            pay_date: today.to_string(),
-            start_date: add_months(today, -1),
-            end_date: today.to_string(),
-        }),
-        ExpensePeriodKey::Last3Months => Some(PayPeriod {
-            pay_date: today.to_string(),
-            start_date: add_months(today, -3),
-            end_date: today.to_string(),
-        }),
+        ExpensePeriodKey::LastMonth => Some(PayPeriod::range(add_months(today, -1), today)),
+        ExpensePeriodKey::Last3Months => Some(PayPeriod::range(add_months(today, -3), today)),
     }
 }
 
@@ -171,7 +162,7 @@ pub fn build_expense_period_view(
     budgets: &[(BudgetRow, Vec<String>, i32)],
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
-    today: &str,
+    today: NaiveDate,
     include_projected: bool,
     extra_spent_limit: Option<i32>,
 ) -> Option<ExpensePeriodViewResponse> {
@@ -200,11 +191,10 @@ pub fn build_expense_period_view(
             },
         )
     } else {
-        get_actual_expenses_in_date_range(
+        get_actual_expenses_in_period(
             &expense_list,
             &recurring_list,
-            &period.start_date,
-            &period.end_date,
+            &period,
             display_currency,
             rates,
             ExpenseItemSort::DateDesc,
@@ -225,13 +215,7 @@ pub fn build_expense_period_view(
     // Chart aggregates are computed over the period's actual expenses (the chart range is
     // always the resolved period range), reusing the already-loaded expense list — no extra
     // DB pass. Previously served by the separate /expenses/chart-summary endpoint.
-    let chart = build_chart_summary(
-        expenses,
-        &period.start_date,
-        &period.end_date,
-        display_currency,
-        rates,
-    );
+    let chart = build_chart_summary(expenses, &period, display_currency, rates);
 
     let extra_spent = compute_extra_spent(expenses, &period, display_currency, rates);
 
@@ -265,72 +249,58 @@ pub(crate) fn compute_extra_spent(
 ) -> i64 {
     expenses
         .iter()
-        .filter(|(row, _)| is_manual_extra_expense(row))
-        .filter(|(row, _)| {
-            let date = row.date.format("%Y-%m-%d").to_string();
-            is_date_in_period(&date, period)
-        })
+        .filter(|(row, _)| is_manual_extra_expense(row) && period.contains(row.date))
         .map(|(row, _)| i64::from(convert_amount(row.amount, row.currency, display_currency, rates)))
         .sum()
 }
 
-pub fn compute_extra_spent_by_tag(
-    expenses: &[(ExpenseRow, Vec<String>)],
-    from: &str,
-    to: &str,
-    display_currency: CurrencyCode,
-    rates: &ExchangeRates,
+/// Per-tag totals, largest first. A multi-tag expense counts toward each of its tags.
+fn sum_by_tag<'a>(
+    rows: impl IntoIterator<Item = (&'a [String], i64)>,
 ) -> Vec<TagAmountEntry> {
-    let period = PayPeriod {
-        pay_date: to.to_string(),
-        start_date: from.to_string(),
-        end_date: to.to_string(),
-    };
-
-    let mut tag_totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-
-    for (row, tags) in expenses {
-        if !is_manual_extra_expense(row) {
-            continue;
-        }
-        let date = row.date.format("%Y-%m-%d").to_string();
-        if !is_date_in_period(&date, &period) {
-            continue;
-        }
-        let converted = i64::from(convert_amount(row.amount, row.currency, display_currency, rates));
+    let mut tag_totals: HashMap<&'a str, i64> = HashMap::new();
+    for (tags, amount) in rows {
         for tag in tags {
-            *tag_totals.entry(tag.clone()).or_insert(0) += converted;
+            *tag_totals.entry(tag.as_str()).or_insert(0) += amount;
         }
     }
-
     let mut by_tag: Vec<TagAmountEntry> = tag_totals
         .into_iter()
-        .map(|(tag, amount)| TagAmountEntry { tag, amount })
+        .map(|(tag, amount)| TagAmountEntry { tag: tag.to_string(), amount })
         .collect();
     by_tag.sort_by(|a, b| b.amount.cmp(&a.amount));
     by_tag
 }
 
+pub fn compute_extra_spent_by_tag(
+    expenses: &[(ExpenseRow, Vec<String>)],
+    period: &PayPeriod,
+    display_currency: CurrencyCode,
+    rates: &ExchangeRates,
+) -> Vec<TagAmountEntry> {
+    sum_by_tag(
+        expenses
+            .iter()
+            .filter(|(row, _)| is_manual_extra_expense(row) && period.contains(row.date))
+            .map(|(row, tags)| {
+                let converted = convert_amount(row.amount, row.currency, display_currency, rates);
+                (tags.as_slice(), i64::from(converted))
+            }),
+    )
+}
+
 pub fn build_chart_summary(
     expenses: &[(ExpenseRow, Vec<String>)],
-    from: &str,
-    to: &str,
+    period: &PayPeriod,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
 ) -> ExpenseChartSummaryResponse {
-    let period = PayPeriod {
-        pay_date: to.to_string(),
-        start_date: from.to_string(),
-        end_date: to.to_string(),
-    };
-
-    let mut tag_totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     let mut subscription = 0i64;
     let mut other = 0i64;
+    let mut tagged = Vec::new();
 
     for (row, tags) in expenses {
-        let date = row.date.format("%Y-%m-%d").to_string();
-        if !is_date_in_period(&date, &period) {
+        if !period.contains(row.date) {
             continue;
         }
         let converted = i64::from(convert_amount(row.amount, row.currency, display_currency, rates));
@@ -339,19 +309,11 @@ pub fn build_chart_summary(
         } else {
             other += converted;
         }
-        for tag in tags {
-            *tag_totals.entry(tag.clone()).or_insert(0) += converted;
-        }
+        tagged.push((tags.as_slice(), converted));
     }
 
-    let mut by_tag: Vec<TagAmountEntry> = tag_totals
-        .into_iter()
-        .map(|(tag, amount)| TagAmountEntry { tag, amount })
-        .collect();
-    by_tag.sort_by(|a, b| b.amount.cmp(&a.amount));
-
     ExpenseChartSummaryResponse {
-        by_tag,
+        by_tag: sum_by_tag(tagged),
         subscription_split: SubscriptionSplit { subscription, other },
     }
 }
@@ -376,28 +338,25 @@ fn actual_expense_item(
     rates: &ExchangeRates,
 ) -> ProjectionExpenseItem {
     let row = expense.row;
-    let date = row.date.format("%Y-%m-%d").to_string();
     // The template's amount is shown as the "original" only while the charge wasn't overridden.
     let recurring_source = row
         .recurring_id
         .filter(|_| !row.amount_overridden)
         .and_then(|id| recurring_list.iter().find(|r| r.row.id == id));
-    let due_date = row
-        .scheduled_date
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .or_else(|| row.recurring_id.map(|_| recurring_due_date(row)));
 
     ProjectionExpenseItem {
         id: Some(row.id),
         recurring_id: row.recurring_id,
         planned_expense_id: row.planned_expense_id,
         budget_id: row.budget_id,
+        account_id: row.account_id,
         budget_total: None,
         budget_spent: None,
         is_budget_summary: None,
         name: row.name.clone(),
-        scheduled_date: due_date.filter(|due| *due != date),
-        date,
+        // Early payments keep the occurrence they settled.
+        scheduled_date: row.scheduled_date.filter(|due| *due != row.date),
+        date: row.date,
         amount: row.amount,
         currency: row.currency,
         original_amount: recurring_source.map(|r| r.row.amount),
@@ -417,7 +376,7 @@ pub(crate) fn get_expense_items_in_period(
     period: &PayPeriod,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
-    today: &str,
+    today: NaiveDate,
     budgets: &[BudgetWithTags],
     materialized: &ExpensePeriodMaterialized,
     options: GetExpenseItemsOptions,
@@ -428,8 +387,7 @@ pub(crate) fn get_expense_items_in_period(
     let dated_budget_ids = &materialized.dated_budget_ids;
 
     for expense in expense_list {
-        let date = expense.row.date.format("%Y-%m-%d").to_string();
-        if !is_date_in_period(&date, period) {
+        if !period.contains(expense.row.date) {
             continue;
         }
         // Spend against a dated budget is represented by the budget's own line instead.
@@ -445,19 +403,12 @@ pub(crate) fn get_expense_items_in_period(
 
     for recurring in recurring_list {
         let schedule = schedule_from_recurring(recurring.row);
-        let due_dates = get_pay_dates_in_range(&schedule, &period.start_date, &period.end_date);
+        let due_dates = get_pay_dates_in_range(&schedule, period.start_date, period.end_date);
         for due_date in due_dates {
             // Past occurrences are only ever counted through their materialized expense row.
             // Today's still counts as projected until the daily job charges it (same cutoff as
             // projected income), so it's never invisible between midnight and the job's run.
-            if due_date.as_str() < today {
-                continue;
-            }
-            if is_recurring_occurrence_materialized(
-                recurring_materialized,
-                recurring.row.id,
-                &due_date,
-            ) {
+            if due_date < today || recurring_materialized.contains(&(recurring.row.id, due_date)) {
                 continue;
             }
             items.push(ProjectionExpenseItem {
@@ -465,6 +416,7 @@ pub(crate) fn get_expense_items_in_period(
                 recurring_id: Some(recurring.row.id),
                 planned_expense_id: None,
                 budget_id: None,
+                account_id: None,
                 budget_total: None,
                 budget_spent: None,
                 is_budget_summary: None,
@@ -492,18 +444,13 @@ pub(crate) fn get_expense_items_in_period(
     for planned in planned_list {
         // Undated items stay out of periods/projections until paid.
         let Some(due) = planned.row.date else { continue };
-        if is_planned_expense_materialized(planned_materialized, planned.row.id) {
+        if planned_materialized.contains(&planned.row.id) {
             continue;
         }
-        let due = due.format("%Y-%m-%d").to_string();
         // An unpaid item past its date is still owed: project it as due today (in the current
         // period), keeping its original date as `scheduled_date`, until it is paid.
-        let (date, scheduled_date) = if due.as_str() < today {
-            (today.to_string(), Some(due))
-        } else {
-            (due, None)
-        };
-        if !is_date_in_period(&date, period) {
+        let (date, scheduled_date) = if due < today { (today, Some(due)) } else { (due, None) };
+        if !period.contains(date) {
             continue;
         }
         items.push(ProjectionExpenseItem {
@@ -511,6 +458,7 @@ pub(crate) fn get_expense_items_in_period(
             recurring_id: None,
             planned_expense_id: Some(planned.row.id),
             budget_id: None,
+            account_id: None,
             budget_total: None,
             budget_spent: None,
             is_budget_summary: None,
@@ -547,11 +495,12 @@ pub(crate) fn get_expense_items_in_period(
                 recurring_id: None,
                 planned_expense_id: None,
                 budget_id: Some(budget.row.id),
+                account_id: None,
                 budget_total: Some(budget.row.amount),
                 budget_spent: Some(budget.spent),
                 is_budget_summary: Some(true),
                 name: budget.row.name.clone(),
-                date: start.format("%Y-%m-%d").to_string(),
+                date: start,
                 scheduled_date: None,
                 amount: budget.spent,
                 currency: budget.row.currency,
@@ -582,8 +531,8 @@ pub(crate) fn get_expense_items_in_period(
             today,
             budget.row.completed_at.as_ref(),
         );
-        let date = end.format("%Y-%m-%d").to_string();
-        if projection_amount <= 0 || !is_date_in_period(&date, period) {
+        let date = end;
+        if projection_amount <= 0 || !period.contains(date) {
             continue;
         }
         items.push(ProjectionExpenseItem {
@@ -591,6 +540,7 @@ pub(crate) fn get_expense_items_in_period(
             recurring_id: None,
             planned_expense_id: None,
             budget_id: Some(budget.row.id),
+            account_id: None,
             budget_total: Some(budget.row.amount),
             budget_spent: Some(budget.spent),
             is_budget_summary: Some(false),
@@ -622,27 +572,17 @@ pub(crate) fn get_expense_items_in_period(
     items
 }
 
-fn get_actual_expenses_in_date_range(
+fn get_actual_expenses_in_period(
     expense_list: &[ExpenseWithTags],
     recurring_list: &[RecurringWithTags],
-    start_date: &str,
-    end_date: &str,
+    period: &PayPeriod,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
     sort: ExpenseItemSort,
 ) -> Vec<ProjectionExpenseItem> {
-    let period = PayPeriod {
-        pay_date: end_date.to_string(),
-        start_date: start_date.to_string(),
-        end_date: end_date.to_string(),
-    };
-
     let mut items: Vec<ProjectionExpenseItem> = expense_list
         .iter()
-        .filter(|expense| {
-            let date = expense.row.date.format("%Y-%m-%d").to_string();
-            is_date_in_period(&date, &period)
-        })
+        .filter(|expense| period.contains(expense.row.date))
         .map(|expense| actual_expense_item(expense, recurring_list, display_currency, rates))
         .collect();
 
@@ -695,8 +635,7 @@ pub(crate) fn to_budget_with_tags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{NaiveDate, Utc};
-    use std::collections::HashMap;
+    use chrono::Utc;
 
     fn empty_rates() -> ExchangeRates {
         ExchangeRates {
@@ -706,15 +645,15 @@ mod tests {
         }
     }
 
-    fn period() -> PayPeriod {
-        PayPeriod {
-            pay_date: "2026-06-30".to_string(),
-            start_date: "2026-06-01".to_string(),
-            end_date: "2026-06-30".to_string(),
-        }
+    fn date(value: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(value, "%Y-%m-%d").unwrap()
     }
 
-    fn expense(amount: i32, date: &str) -> (ExpenseRow, Vec<String>) {
+    fn period() -> PayPeriod {
+        PayPeriod::range(date("2026-06-01"), date("2026-06-30"))
+    }
+
+    fn expense(amount: i32, on: &str) -> (ExpenseRow, Vec<String>) {
         (
             ExpenseRow {
                 id: Uuid::new_v4(),
@@ -722,7 +661,7 @@ mod tests {
                 name: "test".to_string(),
                 amount,
                 currency: CurrencyCode::Usd,
-                date: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
+                date: date(on),
                 scheduled_date: None,
                 recurring_id: None,
                 planned_expense_id: None,
@@ -804,14 +743,14 @@ mod tests {
             &[],
             CurrencyCode::Usd,
             &empty_rates(),
-            "2026-06-26",
+            date("2026-06-26"),
             false,
             None,
         )
         .expect("pay period view");
 
-        assert_eq!(view.period.start_date, "2026-06-26");
-        assert_eq!(view.period.pay_date, "2026-07-25");
+        assert_eq!(view.period.start_date, date("2026-06-26"));
+        assert_eq!(view.period.pay_date, date("2026-07-25"));
         assert!(view.items.is_empty());
     }
 }

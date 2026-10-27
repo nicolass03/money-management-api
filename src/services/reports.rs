@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Months, NaiveDate};
 use serde::Serialize;
 
 use crate::models::{CurrencyCode, ExpenseRow, IncomePayScheduleRow, IncomeRow};
@@ -8,8 +8,7 @@ use crate::services::expense_period::{
     TagAmountEntry,
 };
 use crate::services::pay_periods::{
-    add_days, clip_period_to_report_range, get_pay_periods_overlapping_range, is_date_in_period,
-    schedule_from_income, PayPeriod,
+    add_days, get_pay_periods_overlapping_range, schedule_from_income, PayPeriod,
 };
 
 pub const MAX_REPORT_RANGE_DAYS: i64 = 730;
@@ -25,8 +24,8 @@ pub enum ReportTimeGranularity {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportRange {
-    pub from: String,
-    pub to: String,
+    pub from: NaiveDate,
+    pub to: NaiveDate,
     pub day_count: i64,
 }
 
@@ -45,16 +44,16 @@ pub struct ReportKpis {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportPriorPeriod {
-    pub from: String,
-    pub to: String,
+    pub from: NaiveDate,
+    pub to: NaiveDate,
     pub kpis: ReportKpis,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportTimeBucket {
-    pub start_date: String,
-    pub end_date: String,
+    pub start_date: NaiveDate,
+    pub end_date: NaiveDate,
     pub label: String,
     pub income: i64,
     pub expenses: i64,
@@ -64,9 +63,9 @@ pub struct ReportTimeBucket {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportExtraSpentBucket {
-    pub pay_date: String,
-    pub start_date: String,
-    pub end_date: String,
+    pub pay_date: NaiveDate,
+    pub start_date: NaiveDate,
+    pub end_date: NaiveDate,
     pub label: String,
     pub extra_spent: i64,
 }
@@ -116,10 +115,10 @@ pub fn validate_report_range(from: &str, to: &str) -> Result<(NaiveDate, NaiveDa
     Ok((from_date, to_date, day_count))
 }
 
-pub fn prior_period_range(from: &str, _to: &str, day_count: i64) -> (String, String) {
+/// The equally long range ending the day before `from`.
+pub fn prior_period_range(from: NaiveDate, day_count: i64) -> (NaiveDate, NaiveDate) {
     let prior_to = add_days(from, -1);
-    let prior_from = add_days(&prior_to, -i32::try_from(day_count - 1).unwrap_or(0));
-    (prior_from, prior_to)
+    (add_days(prior_to, -(day_count - 1)), prior_to)
 }
 
 pub fn resolve_granularity(day_count: i64) -> ReportTimeGranularity {
@@ -132,84 +131,59 @@ pub fn resolve_granularity(day_count: i64) -> ReportTimeGranularity {
     }
 }
 
+/// `(start, end, label)` buckets covering `[from, to]`, clipped to it at both ends.
 pub fn build_time_buckets(
-    from: &str,
-    to: &str,
+    from: NaiveDate,
+    to: NaiveDate,
     granularity: ReportTimeGranularity,
-) -> Vec<(String, String, String)> {
-    let from_date = NaiveDate::parse_from_str(from, "%Y-%m-%d").expect("valid from");
-    let to_date = NaiveDate::parse_from_str(to, "%Y-%m-%d").expect("valid to");
-
+) -> Vec<(NaiveDate, NaiveDate, String)> {
+    let mut buckets = Vec::new();
     match granularity {
         ReportTimeGranularity::Day => {
-            let mut buckets = Vec::new();
-            let mut cursor = from_date;
-            while cursor <= to_date {
-                let iso = cursor.format("%Y-%m-%d").to_string();
-                buckets.push((iso.clone(), iso.clone(), iso));
-                cursor += chrono::Duration::days(1);
+            for day in from.iter_days().take_while(|day| *day <= to) {
+                buckets.push((day, day, day.to_string()));
             }
-            buckets
         }
         ReportTimeGranularity::Week => {
-            let mut buckets = Vec::new();
-            let mut cursor = week_start(from_date);
-            while cursor <= to_date {
-                let week_end = (cursor + chrono::Duration::days(6)).min(to_date);
-                let start = cursor.max(from_date);
-                let start_iso = start.format("%Y-%m-%d").to_string();
-                let end_iso = week_end.format("%Y-%m-%d").to_string();
-                let label = format!("{start_iso} – {end_iso}");
-                buckets.push((start_iso, end_iso, label));
-                cursor += chrono::Duration::days(7);
+            let mut cursor = week_start(from);
+            while cursor <= to {
+                let start = cursor.max(from);
+                let end = add_days(cursor, 6).min(to);
+                buckets.push((start, end, format!("{start} – {end}")));
+                cursor = add_days(cursor, 7);
             }
-            buckets
         }
         ReportTimeGranularity::Month => {
-            let mut buckets = Vec::new();
-            let mut year = from_date.year();
-            let mut month = from_date.month();
-            loop {
-                let month_start =
-                    NaiveDate::from_ymd_opt(year, month, 1).expect("valid month start");
-                if month_start > to_date {
-                    break;
-                }
-                let next_month = if month == 12 {
-                    NaiveDate::from_ymd_opt(year + 1, 1, 1)
-                } else {
-                    NaiveDate::from_ymd_opt(year, month + 1, 1)
-                }
-                .expect("valid next month");
-                let month_end = (next_month - chrono::Duration::days(1)).min(to_date);
-                let start = month_start.max(from_date);
-                let start_iso = start.format("%Y-%m-%d").to_string();
-                let end_iso = month_end.format("%Y-%m-%d").to_string();
-                let label = format!("{year}-{month:02}");
-                buckets.push((start_iso, end_iso, label));
-                if month == 12 {
-                    year += 1;
-                    month = 1;
-                } else {
-                    month += 1;
-                }
+            let mut month_start = from.with_day(1).expect("day 1 exists");
+            while month_start <= to {
+                let next_month = month_start + Months::new(1);
+                let start = month_start.max(from);
+                let end = add_days(next_month, -1).min(to);
+                buckets.push((start, end, month_start.format("%Y-%m").to_string()));
+                month_start = next_month;
             }
-            buckets
         }
     }
+    buckets
 }
 
 fn week_start(date: NaiveDate) -> NaiveDate {
-    let weekday = date.weekday().num_days_from_monday();
-    date - chrono::Duration::days(i64::from(weekday))
+    add_days(date, -i64::from(date.weekday().num_days_from_monday()))
 }
 
-fn pay_period(from: &str, to: &str) -> PayPeriod {
-    PayPeriod {
-        pay_date: to.to_string(),
-        start_date: from.to_string(),
-        end_date: to.to_string(),
-    }
+/// Total (display currency) and count of the rows dated inside `period`.
+fn sum_in_period(
+    rows: impl IntoIterator<Item = (NaiveDate, i32, CurrencyCode)>,
+    period: &PayPeriod,
+    display_currency: CurrencyCode,
+    rates: &ExchangeRates,
+) -> (i64, i32) {
+    rows.into_iter()
+        .filter(|(date, _, _)| period.contains(*date))
+        .fold((0, 0), |(total, count), (_, amount, currency)| {
+            let converted = convert_amount(amount, currency, display_currency, rates);
+            (total + i64::from(converted), count + 1)
+        })
 }
 
 fn sum_income_in_period(
@@ -218,16 +192,8 @@ fn sum_income_in_period(
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
 ) -> (i64, i32) {
-    let mut total = 0i64;
-    let mut count = 0i32;
-    for row in income_rows {
-        let date = row.date.format("%Y-%m-%d").to_string();
-        if is_date_in_period(&date, period) {
-            total += i64::from(convert_amount(row.amount, row.currency, display_currency, rates));
-            count += 1;
-        }
-    }
-    (total, count)
+    let rows = income_rows.iter().map(|row| (row.date, row.amount, row.currency));
+    sum_in_period(rows, period, display_currency, rates)
 }
 
 fn sum_expenses_in_period(
@@ -236,35 +202,25 @@ fn sum_expenses_in_period(
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
 ) -> (i64, i32) {
-    let mut total = 0i64;
-    let mut count = 0i32;
-    for (row, _) in expenses {
-        let date = row.date.format("%Y-%m-%d").to_string();
-        if is_date_in_period(&date, period) {
-            total += i64::from(convert_amount(row.amount, row.currency, display_currency, rates));
-            count += 1;
-        }
-    }
-    (total, count)
+    let rows = expenses.iter().map(|(row, _)| (row.date, row.amount, row.currency));
+    sum_in_period(rows, period, display_currency, rates)
 }
 
 pub fn compute_kpis(
     expenses: &[(ExpenseRow, Vec<String>)],
     income_rows: &[IncomeRow],
-    from: &str,
-    to: &str,
+    period: &PayPeriod,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
     day_count: i64,
 ) -> ReportKpis {
-    let period = pay_period(from, to);
     // Each expense counted exactly once (summing per-tag totals would double-count multi-tag
     // expenses and drop untagged ones).
     let (total_expenses, expense_count) =
-        sum_expenses_in_period(expenses, &period, display_currency, rates);
+        sum_expenses_in_period(expenses, period, display_currency, rates);
     let (total_income, income_count) =
-        sum_income_in_period(income_rows, &period, display_currency, rates);
-    let extra_spent = compute_extra_spent(expenses, &period, display_currency, rates);
+        sum_income_in_period(income_rows, period, display_currency, rates);
+    let extra_spent = compute_extra_spent(expenses, period, display_currency, rates);
     let avg_daily_spend = if day_count > 0 { total_expenses / day_count } else { 0 };
 
     ReportKpis {
@@ -281,17 +237,15 @@ pub fn compute_kpis(
 fn build_time_series(
     expenses: &[(ExpenseRow, Vec<String>)],
     income_rows: &[IncomeRow],
-    from: &str,
-    to: &str,
+    range: &PayPeriod,
     granularity: ReportTimeGranularity,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
 ) -> ReportTimeSeries {
-    let bucket_defs = build_time_buckets(from, to, granularity);
-    let buckets = bucket_defs
+    let buckets = build_time_buckets(range.start_date, range.end_date, granularity)
         .into_iter()
         .map(|(start_date, end_date, label)| {
-            let period = pay_period(&start_date, &end_date);
+            let period = PayPeriod::range(start_date, end_date);
             let (income, _) = sum_income_in_period(income_rows, &period, display_currency, rates);
             let (bucket_expenses, _) =
                 sum_expenses_in_period(expenses, &period, display_currency, rates);
@@ -314,8 +268,7 @@ fn build_time_series(
 
 fn build_extra_spent_time_series(
     expenses: &[(ExpenseRow, Vec<String>)],
-    from: &str,
-    to: &str,
+    range: &PayPeriod,
     primary_schedule: Option<&IncomePayScheduleRow>,
     display_currency: CurrencyCode,
     rates: &ExchangeRates,
@@ -325,19 +278,16 @@ fn build_extra_spent_time_series(
     };
 
     let schedule = schedule_from_income(schedule_row);
-    let periods = get_pay_periods_overlapping_range(&schedule, from, to);
-
-    let buckets = periods
+    let buckets = get_pay_periods_overlapping_range(&schedule, range.start_date, range.end_date)
         .into_iter()
         .map(|period| {
-            let clipped = clip_period_to_report_range(&period, from, to);
-            let extra_spent = compute_extra_spent(expenses, &clipped, display_currency, rates);
+            let clipped = period.clip(range.start_date, range.end_date);
             ReportExtraSpentBucket {
-                label: period.pay_date.clone(),
+                label: period.pay_date.to_string(),
                 pay_date: period.pay_date,
                 start_date: period.start_date,
                 end_date: period.end_date,
-                extra_spent,
+                extra_spent: compute_extra_spent(expenses, &clipped, display_currency, rates),
             }
         })
         .collect();
@@ -345,75 +295,53 @@ fn build_extra_spent_time_series(
     ReportExtraSpentTimeSeries { buckets }
 }
 
+/// Report for `[from, to]` (validated by [`validate_report_range`]). `expenses` / `income_rows`
+/// must cover the prior period too when `compare_prior` is set.
 pub fn build_report_summary(
-    from: &str,
-    to: &str,
+    from: NaiveDate,
+    to: NaiveDate,
     expenses: &[(ExpenseRow, Vec<String>)],
     income_rows: &[IncomeRow],
     primary_schedule: Option<&IncomePayScheduleRow>,
     display_currency: CurrencyCode,
     rates: ExchangeRates,
     compare_prior: bool,
-) -> Result<ReportSummaryResponse, String> {
-    let (_from_date, _to_date, day_count) = validate_report_range(from, to)?;
+) -> ReportSummaryResponse {
+    let range = PayPeriod::range(from, to);
+    let day_count = (to - from).num_days() + 1;
     let granularity = resolve_granularity(day_count);
-    let chart = build_chart_summary(expenses, from, to, display_currency, &rates);
-    let kpis = compute_kpis(
-        expenses,
-        income_rows,
-        from,
-        to,
-        display_currency,
-        &rates,
-        day_count,
-    );
+    let chart = build_chart_summary(expenses, &range, display_currency, &rates);
+    let kpis = compute_kpis(expenses, income_rows, &range, display_currency, &rates, day_count);
 
-    let prior_period = if compare_prior {
-        let (prior_from, prior_to) = prior_period_range(from, to, day_count);
-        let prior_kpis = compute_kpis(
-            expenses,
-            income_rows,
-            &prior_from,
-            &prior_to,
-            display_currency,
-            &rates,
-            day_count,
-        );
-        Some(ReportPriorPeriod {
+    let prior_period = compare_prior.then(|| {
+        let (prior_from, prior_to) = prior_period_range(from, day_count);
+        ReportPriorPeriod {
             from: prior_from,
             to: prior_to,
-            kpis: prior_kpis,
-        })
-    } else {
-        None
-    };
+            kpis: compute_kpis(
+                expenses,
+                income_rows,
+                &PayPeriod::range(prior_from, prior_to),
+                display_currency,
+                &rates,
+                day_count,
+            ),
+        }
+    });
 
-    let time_series = build_time_series(
-        expenses,
-        income_rows,
-        from,
-        to,
-        granularity,
-        display_currency,
-        &rates,
-    );
-    let extra_spent_by_tag =
-        compute_extra_spent_by_tag(expenses, from, to, display_currency, &rates);
+    let time_series =
+        build_time_series(expenses, income_rows, &range, granularity, display_currency, &rates);
+    let extra_spent_by_tag = compute_extra_spent_by_tag(expenses, &range, display_currency, &rates);
     let extra_spent_time_series = build_extra_spent_time_series(
         expenses,
-        from,
-        to,
+        &range,
         primary_schedule,
         display_currency,
         &rates,
     );
 
-    Ok(ReportSummaryResponse {
-        range: ReportRange {
-            from: from.to_string(),
-            to: to.to_string(),
-            day_count,
-        },
+    ReportSummaryResponse {
+        range: ReportRange { from, to, day_count },
         display_currency,
         rates,
         kpis,
@@ -423,7 +351,7 @@ pub fn build_report_summary(
         subscription_split: chart.subscription_split,
         time_series,
         extra_spent_time_series,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -444,9 +372,10 @@ mod tests {
 
     #[test]
     fn prior_period_is_equal_length() {
-        let (from, to) = prior_period_range("2025-02-01", "2025-03-02", 30);
-        assert_eq!(from, "2025-01-02");
-        assert_eq!(to, "2025-01-31");
+        let date = |value| NaiveDate::parse_from_str(value, "%Y-%m-%d").unwrap();
+        let (from, to) = prior_period_range(date("2025-02-01"), 30);
+        assert_eq!(from, date("2025-01-02"));
+        assert_eq!(to, date("2025-01-31"));
     }
 
     #[test]
@@ -460,8 +389,8 @@ mod tests {
     #[test]
     fn daily_bucket_count_matches_range() {
         let buckets = build_time_buckets(
-            "2025-01-01",
-            "2025-01-07",
+            NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2025, 1, 7).unwrap(),
             ReportTimeGranularity::Day,
         );
         assert_eq!(buckets.len(), 7);

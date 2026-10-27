@@ -14,16 +14,14 @@ pub fn budget_overlaps_period(
     let (Some(start), Some(end)) = (start_date, end_date) else {
         return false;
     };
-    let start_s = start.format("%Y-%m-%d").to_string();
-    let end_s = end.format("%Y-%m-%d").to_string();
-    period.start_date <= end_s && period.end_date >= start_s
+    period.start_date <= end && period.end_date >= start
 }
 
 pub fn get_budget_projection_amount(
     amount: i32,
     end_date: Option<NaiveDate>,
     spent: i32,
-    today: &str,
+    today: NaiveDate,
     completed_at: Option<&DateTime<Utc>>,
 ) -> i32 {
     if completed_at.is_some() {
@@ -32,8 +30,7 @@ pub fn get_budget_projection_amount(
     let Some(end) = end_date else {
         return 0;
     };
-    let end_s = end.format("%Y-%m-%d").to_string();
-    if today <= end_s.as_str() {
+    if today <= end {
         amount
     } else {
         spent
@@ -43,14 +40,12 @@ pub fn get_budget_projection_amount(
 pub fn is_budget_projection_projected(
     start_date: Option<NaiveDate>,
     end_date: Option<NaiveDate>,
-    today: &str,
+    today: NaiveDate,
 ) -> bool {
     let (Some(start), Some(end)) = (start_date, end_date) else {
         return false;
     };
-    let start_s = start.format("%Y-%m-%d").to_string();
-    let end_s = end.format("%Y-%m-%d").to_string();
-    today <= end_s.as_str() && today < start_s.as_str()
+    today <= end && today < start
 }
 
 #[cfg(test)]
@@ -62,7 +57,7 @@ mod tests {
         let end = NaiveDate::from_ymd_opt(2026, 7, 2).unwrap();
         let completed = Some(Utc::now());
         assert_eq!(
-            get_budget_projection_amount(10_000, Some(end), 4_500, "2026-07-02", completed.as_ref()),
+            get_budget_projection_amount(10_000, Some(end), 4_500, NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(), completed.as_ref()),
             4_500
         );
     }
@@ -71,7 +66,7 @@ mod tests {
     fn active_dated_budget_uses_envelope_on_last_day() {
         let end = NaiveDate::from_ymd_opt(2026, 7, 2).unwrap();
         assert_eq!(
-            get_budget_projection_amount(10_000, Some(end), 4_500, "2026-07-02", None),
+            get_budget_projection_amount(10_000, Some(end), 4_500, NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(), None),
             10_000
         );
     }
@@ -80,7 +75,7 @@ mod tests {
     fn ended_budget_uses_spent_after_end_date() {
         let end = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
         assert_eq!(
-            get_budget_projection_amount(10_000, Some(end), 4_500, "2026-07-02", None),
+            get_budget_projection_amount(10_000, Some(end), 4_500, NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(), None),
             4_500
         );
     }

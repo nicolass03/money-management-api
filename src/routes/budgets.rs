@@ -3,7 +3,6 @@ use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
-use crate::cache::InvalidationScope;
 use crate::dto::{
     CompleteBudgetRequest, CreateBudgetExpenseRequest, CreateBudgetRequest, UpdateBudgetRequest,
 };
@@ -15,7 +14,7 @@ use crate::services::projection_history::HistorySync;
 use crate::state::AppState;
 use crate::validation::{
     parse_currency, parse_date, parse_tag_names, regex_like_date, require_non_empty_name,
-    require_positive_amount, today_iso,
+    require_positive_amount, resolve_client_today,
 };
 
 fn parse_optional_date(value: &Option<String>) -> Result<Option<chrono::NaiveDate>, ApiError> {
@@ -85,8 +84,8 @@ pub async fn list_budgets(
         .budgets_with_tags_and_spent(user.sub, settings.cache_revision)
         .await?;
     Ok(Json(
-        rows.into_iter()
-            .map(|(row, tags, spent)| budget_to_response(row, tags, spent))
+        rows.iter()
+            .map(|(row, tags, spent)| budget_to_response(row.clone(), tags.clone(), *spent))
             .collect(),
     ))
 }
@@ -108,13 +107,7 @@ pub async fn create_budget(
         &tags,
     )
     .await?;
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::BudgetChange,
-        budget_history([row.end_date]),
-    )
-    .await;
+    finish_write(&state, user.sub, budget_history([row.end_date])).await;
     Ok(Json(budget_to_response(row, tags, 0)))
 }
 
@@ -177,13 +170,7 @@ pub async fn update_budget(
         .await?
         .map(|(_, _, spent)| spent)
         .unwrap_or(0);
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::BudgetChange,
-        budget_history([existing.end_date, row.end_date, earliest_expense]),
-    )
-    .await;
+    finish_write(&state, user.sub, budget_history([existing.end_date, row.end_date, earliest_expense])).await;
     Ok(Json(budget_to_response(row, tags, spent)))
 }
 
@@ -197,13 +184,7 @@ pub async fn delete_budget(
         .ok_or(ApiError::NotFound)?;
     // Only budgets without expenses can be deleted, so just its own line moves.
     budgets_repo::delete(&state.db_pool, user.sub, id).await?;
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::BudgetChange,
-        budget_history([existing.end_date]),
-    )
-    .await;
+    finish_write(&state, user.sub, budget_history([existing.end_date])).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -213,15 +194,7 @@ pub async fn complete_budget(
     Path(id): Path<Uuid>,
     Json(body): Json<CompleteBudgetRequest>,
 ) -> Result<Json<BudgetResponse>, ApiError> {
-    let as_of = match &body.as_of {
-        Some(value) if !value.trim().is_empty() => {
-            if !regex_like_date(value) {
-                return Err(ApiError::BadRequest("invalid date".into()));
-            }
-            parse_date(value)?
-        }
-        _ => parse_date(&today_iso())?,
-    };
+    let as_of = resolve_client_today(body.as_of.as_deref())?;
 
     let existing = budgets_repo::find_by_id(&state.db_pool, user.sub, id)
         .await?
@@ -234,13 +207,7 @@ pub async fn complete_budget(
     // expenses (shown at their own dates) into that single line.
     let earliest_expense =
         budgets_repo::earliest_expense_date_for(&state.db_pool, user.sub, id).await?;
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::BudgetChange,
-        budget_history([existing.end_date, row.end_date, earliest_expense]),
-    )
-    .await;
+    finish_write(&state, user.sub, budget_history([existing.end_date, row.end_date, earliest_expense])).await;
     Ok(Json(budget_to_response(row, tags, spent)))
 }
 
@@ -310,13 +277,7 @@ pub async fn create_budget_expense(
     let (_, tags) = expenses_repo::find_with_tags(&state.db_pool, user.sub, row.id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::BudgetChange,
-        budget_history([Some(date), budget_row.end_date]),
-    )
-    .await;
+    finish_write(&state, user.sub, budget_history([Some(date), budget_row.end_date])).await;
     Ok(Json(expense_to_response(row, tags)))
 }
 
@@ -332,12 +293,6 @@ pub async fn delete_budget_expense(
         budgets_repo::delete_budget_expense(&state.db_pool, user.sub, budget_id, expense_id)
             .await?
             .ok_or(ApiError::NotFound)?;
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::BudgetChange,
-        budget_history([Some(deleted.date), budget.end_date]),
-    )
-    .await;
+    finish_write(&state, user.sub, budget_history([Some(deleted.date), budget.end_date])).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }

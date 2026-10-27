@@ -1,21 +1,23 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
+use crate::dto::AsOfQuery;
 use crate::error::ApiError;
 use crate::models::SubscriptionReminderResponse;
 use crate::repos::subscription_reminders as reminders_repo;
 use crate::state::AppState;
-use crate::validation::parse_date;
+use crate::validation::resolve_client_today;
 
 /// Active cancellation reminders (undismissed, charge still upcoming) for the current user. Drives
 /// the web banners.
 pub async fn list_reminders(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
+    Query(query): Query<AsOfQuery>,
 ) -> Result<Json<Vec<SubscriptionReminderResponse>>, ApiError> {
-    let today = parse_date(&crate::validation::today_iso())?;
+    let today = resolve_client_today(query.as_of.as_deref())?;
     let reminders = reminders_repo::list_active(&state.db_pool, user.sub, today).await?;
     Ok(Json(reminders))
 }

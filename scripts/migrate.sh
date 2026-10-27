@@ -13,8 +13,12 @@ set -a
 source .env
 set +a
 
+# The API's runtime role (app_api) can't run DDL: migrations use MIGRATION_DATABASE_URL (the
+# `postgres` role) when set, else DATABASE_URL.
+DATABASE_URL="${MIGRATION_DATABASE_URL:-${DATABASE_URL:-}}"
+
 if [[ -z "${DATABASE_URL:-}" ]]; then
-  echo "error: DATABASE_URL is empty in .env" >&2
+  echo "error: DATABASE_URL (or MIGRATION_DATABASE_URL) is empty in .env" >&2
   exit 1
 fi
 

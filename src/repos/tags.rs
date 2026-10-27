@@ -20,18 +20,16 @@ async fn ensure_tags(
     }
 
     let now = Utc::now();
-    for name in names {
-        diesel::insert_into(tags::table)
-            .values((
-                tags::user_id.eq(user_id),
-                tags::name.eq(name),
-                tags::created_at.eq(now),
-            ))
-            .on_conflict((tags::user_id, tags::name))
-            .do_nothing()
-            .execute(conn)
-            .await?;
-    }
+    let new_tags: Vec<_> = names
+        .iter()
+        .map(|name| (tags::user_id.eq(user_id), tags::name.eq(name), tags::created_at.eq(now)))
+        .collect();
+    diesel::insert_into(tags::table)
+        .values(new_tags)
+        .on_conflict((tags::user_id, tags::name))
+        .do_nothing()
+        .execute(conn)
+        .await?;
 
     let rows: Vec<(Uuid, String)> = tags::table
         .filter(tags::user_id.eq(user_id))
@@ -56,6 +54,26 @@ async fn ensure_tags(
         .collect()
 }
 
+/// Links `expense_id` to every tag in `tag_ids`, in one statement.
+async fn link_expense_tags(
+    conn: &mut AsyncPgConnection,
+    expense_id: Uuid,
+    tag_ids: &[Uuid],
+) -> DbResult<()> {
+    if tag_ids.is_empty() {
+        return Ok(());
+    }
+    let links: Vec<_> = tag_ids
+        .iter()
+        .map(|tag_id| (expense_tags::expense_id.eq(expense_id), expense_tags::tag_id.eq(*tag_id)))
+        .collect();
+    diesel::insert_into(expense_tags::table)
+        .values(links)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_expense_tags(
     conn: &mut AsyncPgConnection,
     user_id: Uuid,
@@ -66,16 +84,7 @@ pub async fn set_expense_tags(
         .execute(conn)
         .await?;
     let tag_ids = ensure_tags(conn, user_id, tag_names).await?;
-    if tag_ids.is_empty() {
-        return Ok(());
-    }
-    for tag_id in tag_ids {
-        diesel::insert_into(expense_tags::table)
-            .values((expense_tags::expense_id.eq(expense_id), expense_tags::tag_id.eq(tag_id)))
-            .execute(conn)
-            .await?;
-    }
-    Ok(())
+    link_expense_tags(conn, expense_id, &tag_ids).await
 }
 
 pub async fn set_recurring_expense_tags(
@@ -90,13 +99,19 @@ pub async fn set_recurring_expense_tags(
     )
     .execute(conn)
     .await?;
-    let tag_ids = ensure_tags(conn, user_id, tag_names).await?;
-    for tag_id in tag_ids {
-        diesel::insert_into(recurring_expense_tags::table)
-            .values((
+    let links: Vec<_> = ensure_tags(conn, user_id, tag_names)
+        .await?
+        .into_iter()
+        .map(|tag_id| {
+            (
                 recurring_expense_tags::recurring_expense_id.eq(recurring_expense_id),
                 recurring_expense_tags::tag_id.eq(tag_id),
-            ))
+            )
+        })
+        .collect();
+    if !links.is_empty() {
+        diesel::insert_into(recurring_expense_tags::table)
+            .values(links)
             .execute(conn)
             .await?;
     }
@@ -115,13 +130,19 @@ pub async fn set_planned_expense_tags(
     )
     .execute(conn)
     .await?;
-    let tag_ids = ensure_tags(conn, user_id, tag_names).await?;
-    for tag_id in tag_ids {
-        diesel::insert_into(planned_expense_tags::table)
-            .values((
+    let links: Vec<_> = ensure_tags(conn, user_id, tag_names)
+        .await?
+        .into_iter()
+        .map(|tag_id| {
+            (
                 planned_expense_tags::planned_expense_id.eq(planned_expense_id),
                 planned_expense_tags::tag_id.eq(tag_id),
-            ))
+            )
+        })
+        .collect();
+    if !links.is_empty() {
+        diesel::insert_into(planned_expense_tags::table)
+            .values(links)
             .execute(conn)
             .await?;
     }
@@ -137,10 +158,14 @@ pub async fn set_budget_tags(
     diesel::delete(budget_tags::table.filter(budget_tags::budget_id.eq(budget_id)))
         .execute(conn)
         .await?;
-    let tag_ids = ensure_tags(conn, user_id, tag_names).await?;
-    for tag_id in tag_ids {
+    let links: Vec<_> = ensure_tags(conn, user_id, tag_names)
+        .await?
+        .into_iter()
+        .map(|tag_id| (budget_tags::budget_id.eq(budget_id), budget_tags::tag_id.eq(tag_id)))
+        .collect();
+    if !links.is_empty() {
         diesel::insert_into(budget_tags::table)
-            .values((budget_tags::budget_id.eq(budget_id), budget_tags::tag_id.eq(tag_id)))
+            .values(links)
             .execute(conn)
             .await?;
     }
@@ -157,13 +182,7 @@ pub async fn copy_recurring_tags_to_expense(
         .select(recurring_expense_tags::tag_id)
         .load(conn)
         .await?;
-    for tag_id in links {
-        diesel::insert_into(expense_tags::table)
-            .values((expense_tags::expense_id.eq(expense_id), expense_tags::tag_id.eq(tag_id)))
-            .execute(conn)
-            .await?;
-    }
-    Ok(())
+    link_expense_tags(conn, expense_id, &links).await
 }
 
 pub async fn copy_planned_tags_to_expense(
@@ -176,13 +195,7 @@ pub async fn copy_planned_tags_to_expense(
         .select(planned_expense_tags::tag_id)
         .load(conn)
         .await?;
-    for tag_id in links {
-        diesel::insert_into(expense_tags::table)
-            .values((expense_tags::expense_id.eq(expense_id), expense_tags::tag_id.eq(tag_id)))
-            .execute(conn)
-            .await?;
-    }
-    Ok(())
+    link_expense_tags(conn, expense_id, &links).await
 }
 
 pub async fn copy_budget_tags_to_expense(
@@ -195,13 +208,7 @@ pub async fn copy_budget_tags_to_expense(
         .select(budget_tags::tag_id)
         .load(conn)
         .await?;
-    for tag_id in links {
-        diesel::insert_into(expense_tags::table)
-            .values((expense_tags::expense_id.eq(expense_id), expense_tags::tag_id.eq(tag_id)))
-            .execute(conn)
-            .await?;
-    }
-    Ok(())
+    link_expense_tags(conn, expense_id, &links).await
 }
 
 async fn tag_map_for_ids(

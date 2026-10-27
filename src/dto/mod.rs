@@ -42,6 +42,13 @@ fn default_horizon_days() -> i32 {
     30
 }
 
+/// `?asOf=YYYY-MM-DD`: the client's local today (see `validation::resolve_client_today`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AsOfQuery {
+    pub as_of: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExpensesQuery {
@@ -172,6 +179,15 @@ pub struct CreateExpenseRequest {
 #[serde(rename_all = "camelCase")]
 pub struct PatchExpenseRequest {
     pub amount: i32,
+    /// Full edit (manual expenses only): send `name`, `currency`, `date`, `tags` and
+    /// `isSubscription` together with `amount` (and `accountId`, where absent = unassigned). With
+    /// none of them, only the amount changes.
+    pub name: Option<String>,
+    pub currency: Option<String>,
+    pub date: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub is_subscription: Option<bool>,
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,6 +200,8 @@ pub struct EarlyPayExpenseRequest {
     pub currency: String,
     pub recurring_id: Option<Uuid>,
     pub planned_expense_id: Option<Uuid>,
+    /// Client local today; the paid date must not be after it and must fall in its pay period.
+    pub as_of: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,6 +246,8 @@ pub struct CreatePlannedExpenseRequest {
     pub currency: String,
     pub tags: Vec<String>,
     pub account_id: Option<Uuid>,
+    /// Client local today; a dated item must fall after it.
+    pub as_of: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,6 +266,8 @@ pub struct UpdatePlannedExpenseRequest {
 #[serde(rename_all = "camelCase")]
 pub struct PayPlannedExpenseRequest {
     pub amount: i32,
+    /// Client local today: the payment is recorded on this date.
+    pub as_of: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

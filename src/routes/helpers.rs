@@ -1,10 +1,9 @@
 use chrono::NaiveDate;
 use uuid::Uuid;
 
-use crate::cache::InvalidationScope;
 use crate::error::ApiError;
 use crate::models::{CurrencyCode, ExpenseRow};
-use crate::repos::{accounts, budgets, connection, income_schedules, settings};
+use crate::repos::{accounts, budgets, connection};
 use crate::services::accounts::{compute_balances, pick_funded_account, pick_richest_account};
 use crate::services::pay_periods::{get_period_containing, schedule_from_income, PayPeriod};
 use crate::services::projection_history::{self, HistorySync};
@@ -70,51 +69,45 @@ pub async fn pick_payment_account(
     amount: i32,
     as_of: NaiveDate,
 ) -> Result<Option<Uuid>, ApiError> {
-    let accounts_list = accounts::list_active(pool, user_id).await?;
+    let mut conn = connection::user_connection(pool, user_id).await?;
+    let accounts_list = accounts::list_active_with_conn(&mut conn, user_id).await?;
     if let Some(id) = preferred.filter(|id| accounts_list.iter().any(|a| a.id == *id)) {
         return Ok(Some(id));
     }
-    let mut conn = connection::user_connection(pool, user_id).await?;
     let balances = compute_balances(&mut conn, user_id, &accounts_list, as_of).await?;
     Ok(pick_funded_account(&accounts_list, &balances, currency, amount)
         .or_else(|| pick_richest_account(&accounts_list, &balances, currency)))
 }
 
+/// The primary schedule's pay period containing `today`, if a primary schedule is set.
 pub async fn get_current_pay_period(
-    pool: &DbPool,
-    user_id: Uuid,
-) -> Result<Option<PayPeriod>, ApiError> {
-    let user_settings = settings::get_user_settings(pool, user_id).await?;
-    let Some(schedule_id) = user_settings.primary_schedule_id else {
-        return Ok(None);
-    };
-    let Some(schedule) = income_schedules::find_by_id(pool, user_id, schedule_id).await? else {
-        return Ok(None);
-    };
-    let today = crate::validation::today_iso();
-    Ok(Some(get_period_containing(
-        &schedule_from_income(&schedule),
-        &today,
-    )))
-}
-
-/// Finishes a committed write: re-freezes the projection history the write may have touched, then
-/// invalidates the user's caches. History goes first so a projection read racing the write can't
-/// cache stale frozen rows under the new revision — the invalidation evicts anything cached in
-/// between. A failed re-freeze doesn't fail the (already committed) write: the frozen rows are
-/// dropped instead, so projections fall back to a full live computation until the daily job
-/// freezes them again, rather than serving stale aggregates.
-pub async fn finish_write(
     state: &AppState,
     user_id: Uuid,
-    scope: InvalidationScope,
-    history: Option<HistorySync>,
-) {
+    today: NaiveDate,
+) -> Result<Option<PayPeriod>, ApiError> {
+    let settings = state.loader.user_settings(user_id).await?;
+    let schedule = state.loader.primary_schedule(user_id, &settings).await?;
+    Ok(schedule.map(|schedule| get_period_containing(&schedule_from_income(&schedule), today)))
+}
+
+/// Finishes every committed write: re-freezes the projection history the write may have touched
+/// (`history`), then invalidates the user's caches. History goes first so a projection read racing
+/// the write can't cache stale frozen rows under the new revision — the invalidation evicts
+/// anything cached in between. A failed re-freeze doesn't fail the (already committed) write: the
+/// frozen rows are dropped instead, so projections fall back to a full live computation until the
+/// daily job freezes them again, rather than serving stale aggregates.
+pub async fn finish_write(state: &AppState, user_id: Uuid, history: Option<HistorySync>) {
     let refreshed = match history {
         None => Ok(()),
-        Some(HistorySync::From(date)) => {
-            projection_history::refresh_history_for_date(&state.db_pool, user_id, date).await
-        }
+        // Settings writes rebuild instead, so the cached primary schedule id is current here.
+        Some(HistorySync::From(date)) => match state.loader.user_settings(user_id).await {
+            Ok(settings) => {
+                let pool = &state.db_pool;
+                let schedule_id = settings.primary_schedule_id;
+                projection_history::refresh_history_for_date(pool, user_id, schedule_id, date).await
+            }
+            Err(error) => Err(error),
+        },
         Some(sync) => projection_history::sync_history(&state.db_pool, user_id, sync, false)
             .await
             .map(|_| ()),
@@ -125,7 +118,7 @@ pub async fn finish_write(
             tracing::error!(%user_id, %error, "clearing projection history failed");
         }
     }
-    state.cache.invalidate(scope, user_id).await;
+    state.cache.invalidate(user_id).await;
 }
 
 /// Earliest date whose projection period an expense affects, for re-freezing history: its own date,

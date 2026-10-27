@@ -5,7 +5,6 @@ use axum::Json;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthenticatedUser;
-use crate::cache::InvalidationScope;
 use crate::dto::{CreateIncomeRequest, UpdateIncomeRequest};
 use crate::error::ApiError;
 use crate::models::{IncomeResponse, IncomeSource, is_manual_income};
@@ -38,7 +37,7 @@ pub async fn list_income(
         .loader
         .income_list(user.sub, settings.cache_revision)
         .await?;
-    Ok(Json(rows.into_iter().map(Into::into).collect()))
+    Ok(Json(rows.iter().cloned().map(Into::into).collect()))
 }
 
 pub async fn create_income(
@@ -62,13 +61,7 @@ pub async fn create_income(
     )
     .await?;
     // A past-dated income entry must be reflected in the frozen projection history aggregates.
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::IncomeChange,
-        Some(HistorySync::From(row.date)),
-    )
-    .await;
+    finish_write(&state, user.sub, Some(HistorySync::From(row.date))).await;
     Ok(Json(row.into()))
 }
 
@@ -129,13 +122,7 @@ pub async fn update_income(
 
     // The date may have moved (manual edit). Re-freezing from the earlier of the old/new date
     // recomputes every period after it, so one trigger covers both.
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::IncomeChange,
-        Some(HistorySync::From(existing.date.min(row.date))),
-    )
-    .await;
+    finish_write(&state, user.sub, Some(HistorySync::From(existing.date.min(row.date)))).await;
     Ok(Json(row.into()))
 }
 
@@ -156,12 +143,6 @@ pub async fn delete_income(
         income_repo::soft_delete(&state.db_pool, user.sub, id).await?;
     }
 
-    finish_write(
-        &state,
-        user.sub,
-        InvalidationScope::IncomeChange,
-        Some(HistorySync::From(existing.date)),
-    )
-    .await;
+    finish_write(&state, user.sub, Some(HistorySync::From(existing.date))).await;
     Ok(Json(serde_json::json!({ "success": true })))
 }

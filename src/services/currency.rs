@@ -30,10 +30,10 @@ pub fn convert_amount(
         return amount_minor;
     }
 
-    let from_rate = rates.rates.get(&to_iso_key(from)).copied();
-    let to_rate = rates.rates.get(&to_iso_key(to)).copied();
-
-    let (Some(from_rate), Some(to_rate)) = (from_rate, to_rate) else {
+    let (Some(major_in_base), Some(to_rate)) = (
+        to_base_major(i64::from(amount_minor), from, rates),
+        rate(to, rates),
+    ) else {
         // Unreachable in practice: rates are only accepted when they cover every supported
         // currency (`has_all_currencies`). Returning the amount unconverted would silently mix
         // currencies, so make it loud if it ever happens.
@@ -41,9 +41,17 @@ pub fn convert_amount(
         return amount_minor;
     };
 
-    let major_in_usd = f64::from(amount_minor) / minor_divisor(from) / from_rate;
-    let major_in_target = major_in_usd * to_rate;
-    (major_in_target * minor_divisor(to)).round() as i32
+    (major_in_base * to_rate * minor_divisor(to)).round() as i32
+}
+
+/// `amount_minor` in major units of the rates' base currency, so amounts in different currencies
+/// can be compared. `None` when the currency's rate is missing.
+pub fn to_base_major(amount_minor: i64, currency: CurrencyCode, rates: &ExchangeRates) -> Option<f64> {
+    rate(currency, rates).map(|rate| amount_minor as f64 / minor_divisor(currency) / rate)
+}
+
+fn rate(currency: CurrencyCode, rates: &ExchangeRates) -> Option<f64> {
+    rates.rates.get(currency.to_iso()).copied()
 }
 
 /// Whether `rates` can convert between every supported currency.
@@ -51,8 +59,4 @@ pub fn has_all_currencies(rates: &HashMap<String, f64>) -> bool {
     [CurrencyCode::Eur, CurrencyCode::Usd, CurrencyCode::Cop]
         .into_iter()
         .all(|currency| rates.get(currency.to_iso()).is_some_and(|rate| *rate > 0.0))
-}
-
-fn to_iso_key(currency: CurrencyCode) -> String {
-    currency.to_iso().to_string()
 }

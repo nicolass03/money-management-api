@@ -1,10 +1,10 @@
+use chrono::NaiveDate;
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::models::{CurrencyCode, ExpenseRow, PlannedExpenseRow, RecurringExpenseRow};
 use crate::services::materialization::{
-    build_planned_materialized_set, build_recurring_materialized_set, is_planned_expense_materialized,
-    is_recurring_occurrence_materialized,
+    build_planned_materialized_set, build_recurring_materialized_set,
 };
 use crate::services::pay_periods::{add_days, get_pay_dates_in_range, schedule_from_recurring};
 
@@ -17,7 +17,7 @@ pub struct PayableFutureItem {
     pub recurring_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planned_expense_id: Option<Uuid>,
-    pub scheduled_date: String,
+    pub scheduled_date: NaiveDate,
     pub name: String,
     pub amount: i32,
     pub currency: CurrencyCode,
@@ -25,51 +25,24 @@ pub struct PayableFutureItem {
     pub is_subscription: bool,
 }
 
+/// Unpaid recurring/planned charges due in `(today, today + horizon_days]`.
 pub fn build_upcoming_payable_items(
     expenses: &[(ExpenseRow, Vec<String>)],
     recurring_expenses: &[(RecurringExpenseRow, Vec<String>)],
     planned_expenses: &[(PlannedExpenseRow, Vec<String>)],
-    today: &str,
+    today: NaiveDate,
     horizon_days: i32,
 ) -> Vec<PayableFutureItem> {
-    let window_start = today;
-    let window_end = add_days(today, horizon_days);
+    let window_end = add_days(today, i64::from(horizon_days));
     let recurring_materialized = build_recurring_materialized_set(expenses.iter().map(|(row, _)| row));
     let planned_materialized = build_planned_materialized_set(expenses.iter().map(|(row, _)| row));
     let mut items = Vec::new();
 
     for (recurring, tags) in recurring_expenses {
-        if let Some(last) = recurring.last_payment_date {
-            let last_s = last.format("%Y-%m-%d").to_string();
-            if window_start > last_s.as_str() {
-                continue;
-            }
-        }
-
+        // `get_pay_dates_in_range` already stops at the template's last payment date.
         let schedule = schedule_from_recurring(recurring);
-        let due_dates = get_pay_dates_in_range(
-            &schedule,
-            &add_days(window_start, 1),
-            &window_end,
-        );
-
-        for due_date in due_dates {
-            if due_date.as_str() <= today {
-                continue;
-            }
-
-            if let Some(last) = recurring.last_payment_date {
-                let last_s = last.format("%Y-%m-%d").to_string();
-                if due_date.as_str() > last_s.as_str() {
-                    continue;
-                }
-            }
-
-            if is_recurring_occurrence_materialized(
-                &recurring_materialized,
-                recurring.id,
-                &due_date,
-            ) {
+        for due_date in get_pay_dates_in_range(&schedule, add_days(today, 1), window_end) {
+            if recurring_materialized.contains(&(recurring.id, due_date)) {
                 continue;
             }
 
@@ -78,7 +51,7 @@ pub fn build_upcoming_payable_items(
                 source_type: "recurring".to_string(),
                 recurring_id: Some(recurring.id),
                 planned_expense_id: None,
-                scheduled_date: due_date.clone(),
+                scheduled_date: due_date,
                 name: recurring.name.clone(),
                 amount: recurring.amount,
                 currency: recurring.currency,
@@ -91,12 +64,7 @@ pub fn build_upcoming_payable_items(
     for (planned, tags) in planned_expenses {
         // Undated items have no due date to surface; they're paid from the one-time list.
         let Some(date) = planned.date else { continue };
-        let date = date.format("%Y-%m-%d").to_string();
-        if date.as_str() <= today || date.as_str() > window_end.as_str() {
-            continue;
-        }
-
-        if is_planned_expense_materialized(&planned_materialized, planned.id) {
+        if date <= today || date > window_end || planned_materialized.contains(&planned.id) {
             continue;
         }
 

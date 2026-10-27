@@ -1,21 +1,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Local;
+use chrono::{Local, NaiveDate};
 use diesel::sql_query;
 use diesel::sql_types::BigInt;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
-use crate::cache::{InvalidationScope, UserDataCache};
+use crate::cache::UserDataCache;
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::repos::{connection, users};
-use crate::services::charge_due_expenses::charge_due_expenses_for_date;
-use crate::services::charge_due_income::charge_due_income_for_date;
+use crate::services::charge_due_expenses::charge_due_expenses;
+use crate::services::charge_due_income::charge_due_income;
 use crate::services::projection_history::{sync_history, HistorySync};
 use crate::services::subscription_reminders::generate_subscription_reminders_for_date;
 use crate::state::DbPool;
-use crate::validation::today_iso;
+use crate::validation::today_utc;
 
 /// Advisory lock key for the daily materialization job (arbitrary stable id).
 const DAILY_EXPENSES_LOCK_KEY: i64 = 8_451_903_221;
@@ -28,48 +28,43 @@ const CATCH_UP_DAYS: i64 = 6;
 
 /// Materializes due recurring expenses and due scheduled income for today and the
 /// `CATCH_UP_DAYS` before it (oldest first, so balance-based account picks see earlier charges).
-/// Income mirrors the recurring-expense flow: due occurrences become actual rows on
-/// their pay date, and each resource invalidates its own cache scope independently.
+/// Income mirrors the recurring-expense flow: due occurrences become actual rows on their pay date.
 pub async fn run_daily_expenses(
     pool: &DbPool,
     cache: Option<&UserDataCache>,
-) -> Result<(String, i32), ApiError> {
-    let date = today_iso();
-    let today = chrono::Utc::now().date_naive();
-    let dates: Vec<String> = (0..=CATCH_UP_DAYS)
+) -> Result<(NaiveDate, i32), ApiError> {
+    let today = today_utc();
+    let dates: Vec<NaiveDate> = (0..=CATCH_UP_DAYS)
         .rev()
-        .map(|offset| (today - chrono::Duration::days(offset)).format("%Y-%m-%d").to_string())
+        .map(|offset| today - chrono::Duration::days(offset))
         .collect();
     let user_ids = users::list_user_ids(pool).await?;
     let mut created = 0;
     for user_id in user_ids {
         // Every per-user step is isolated: one user's failure (transient DB error, bad row) must
         // not abort the whole batch and skip everyone else. Each step self-heals on the next run.
-        let mut expenses_created = 0;
-        let mut income_created = 0;
-        for day in &dates {
-            match charge_due_expenses_for_date(pool, user_id, day).await {
-                Ok(count) => expenses_created += count,
-                Err(error) => tracing::error!(%user_id, day, %error, "charge due expenses failed"),
-            }
-            match charge_due_income_for_date(pool, user_id, day).await {
-                Ok(count) => income_created += count,
-                Err(error) => tracing::error!(%user_id, day, %error, "charge due income failed"),
-            }
-        }
-        if let Some(cache) = cache {
-            if expenses_created > 0 {
-                cache.invalidate(InvalidationScope::ExpenseChange, user_id).await;
-            }
-            if income_created > 0 {
-                cache.invalidate(InvalidationScope::IncomeChange, user_id).await;
+        let expenses_created = charge_due_expenses(pool, user_id, &dates)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(%user_id, %error, "charge due expenses failed");
+                0
+            });
+        let income_created = charge_due_income(pool, user_id, &dates)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(%user_id, %error, "charge due income failed");
+                0
+            });
+        if expenses_created + income_created > 0 {
+            if let Some(cache) = cache {
+                cache.invalidate(user_id).await;
             }
         }
 
         // Cancellation-reminder rows drive the web banners; iOS schedules its own local
         // notifications. They are not server-cached, so no invalidation is needed here.
         let reminders_created =
-            match generate_subscription_reminders_for_date(pool, user_id, &date).await {
+            match generate_subscription_reminders_for_date(pool, user_id, today).await {
                 Ok(count) => count,
                 Err(error) => {
                     tracing::error!(%user_id, %error, "subscription reminders failed");
@@ -95,7 +90,7 @@ pub async fn run_daily_expenses(
 
         created += expenses_created + income_created + reminders_created + history_created;
     }
-    Ok((date, created))
+    Ok((today, created))
 }
 
 #[derive(diesel::QueryableByName)]

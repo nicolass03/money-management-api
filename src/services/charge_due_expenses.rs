@@ -1,19 +1,19 @@
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel_async::AsyncConnection;
 use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::repos::{
-    accounts as accounts_repo, connection, expenses as expenses_repo, settings as settings_repo,
-    tags as tags_repo,
+    accounts as accounts_repo, connection, expenses as expenses_repo, recurring_expenses,
+    settings as settings_repo, tags as tags_repo,
 };
 use crate::services::accounts::{
     compute_balances, pick_funded_account, pick_richest_account, pick_richest_any_currency,
 };
 use crate::services::currency::convert_amount;
 use crate::services::exchange_rates::get_exchange_rates;
-use crate::services::pay_periods::{get_pay_dates_in_range, schedule_from_recurring};
+use crate::services::pay_periods::{occurs_on, schedule_from_recurring};
 use crate::state::DbPool;
 
 fn is_recurring_due_unique_violation(error: &DieselError) -> bool {
@@ -24,138 +24,117 @@ fn is_recurring_due_unique_violation(error: &DieselError) -> bool {
     )
 }
 
-pub async fn charge_due_expenses_for_date(
+/// Materializes the user's recurring expenses due on each of `dates` (oldest first, so
+/// balance-based account picks see earlier charges). Templates, accounts, settings and rates are
+/// loaded once for all dates, over one connection. Returns the number of charges created.
+pub async fn charge_due_expenses(
     pool: &DbPool,
     user_id: Uuid,
-    date: &str,
+    dates: &[NaiveDate],
 ) -> Result<i32, ApiError> {
     let rates = get_exchange_rates(pool, false).await?;
-    let settings = settings_repo::get_user_settings(pool, user_id).await?;
-    let recurring_list = crate::repos::recurring_expenses::list_all(pool, user_id).await?;
-    let mut materialized_ids =
-        expenses_repo::get_materialized_recurring_ids_for_due_date(pool, user_id, date).await?;
-
-    let display_currency = settings.display_currency;
-    let now = Utc::now();
-    let due_date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .map_err(|_| ApiError::BadRequest("invalid date".into()))?;
-
-    // Account selection (requirement #6): charge a matching-currency account when it can cover the
-    // expense, otherwise fall back to the display-currency account (allowed to go negative).
-    // Balances are derived once and decremented in-memory as charges land so multiple same-day
-    // charges see up-to-date balances.
-    let accounts = accounts_repo::list_active(pool, user_id).await?;
-    // One connection is checked out for the whole per-user charge (balance read + each insert + the
-    // final cache bump) instead of a fresh checkout (and RLS round-trip) per due expense.
     let mut conn = connection::user_connection(pool, user_id).await?;
-    let mut balances = compute_balances(&mut conn, user_id, &accounts, due_date).await?;
+    let display_currency = settings_repo::get_user_settings_with_conn(&mut conn, user_id)
+        .await?
+        .display_currency;
+    let recurring_list = recurring_expenses::list_all_with_conn(&mut conn, user_id).await?;
+    let accounts = accounts_repo::list_active_with_conn(&mut conn, user_id).await?;
+    let now = Utc::now();
     let mut created = 0;
 
-    for recurring in recurring_list {
-        if let Some(last) = recurring.last_payment_date {
-            let last_s = last.format("%Y-%m-%d").to_string();
-            if date > last_s.as_str() {
+    for &due_date in dates {
+        let mut materialized_ids =
+            expenses_repo::get_materialized_recurring_ids_for_due_date(&mut conn, user_id, due_date)
+                .await?;
+        // Balances are derived once per day and decremented in-memory as charges land, so
+        // multiple same-day charges see up-to-date balances.
+        let mut balances = compute_balances(&mut conn, user_id, &accounts, due_date).await?;
+
+        for recurring in &recurring_list {
+            // Never materialize an occurrence dated before the template was last saved: creating
+            // or editing a template doesn't backfill history, even when the daily job catches up
+            // on days it missed. (`occurs_on` already respects the last payment date.)
+            if due_date < recurring.updated_at.date_naive()
+                || materialized_ids.contains(&recurring.id)
+                || !occurs_on(&schedule_from_recurring(recurring), due_date)
+            {
                 continue;
             }
-        }
 
-        // Never materialize an occurrence dated before the template was last saved: creating or
-        // editing a template doesn't backfill history, even when the daily job catches up on days
-        // it missed.
-        if due_date < recurring.updated_at.date_naive() {
-            continue;
-        }
+            // Account selection order:
+            //  1. An explicitly pinned, still-active account — charged in its (== the template's)
+            //     currency even if it can't cover the charge (allowed to go negative), honoring
+            //     the user's choice.
+            //  2. Otherwise pick by currency: a same-currency account that can cover the charge.
+            //  3. Else the richest display-currency account (converted, may go negative).
+            //  4. Else the richest account in ANY currency (by converted value) — so a charge is
+            //     never stranded off-book when the user has no display-currency account.
+            //  5. Only when the user has no active account at all does it stay unattributed.
+            let pinned = recurring
+                .account_id
+                .filter(|id| accounts.iter().any(|a| a.id == *id));
+            let convert_to = |currency| {
+                convert_amount(recurring.amount, recurring.currency, currency, &rates)
+            };
+            let (amount, currency, account_id) = if let Some(id) = pinned {
+                (recurring.amount, recurring.currency, Some(id))
+            } else if let Some(id) =
+                pick_funded_account(&accounts, &balances, recurring.currency, recurring.amount)
+            {
+                (recurring.amount, recurring.currency, Some(id))
+            } else if let Some(id) = pick_richest_account(&accounts, &balances, display_currency) {
+                (convert_to(display_currency), display_currency, Some(id))
+            } else if let Some(account) = pick_richest_any_currency(&accounts, &balances, &rates) {
+                (convert_to(account.currency), account.currency, Some(account.id))
+            } else {
+                (convert_to(display_currency), display_currency, None)
+            };
 
-        let schedule = schedule_from_recurring(&recurring);
-        let due_dates = get_pay_dates_in_range(&schedule, date, date);
-        if due_dates.is_empty() || materialized_ids.contains(&recurring.id) {
-            continue;
-        }
-
-        // Account selection order:
-        //  1. An explicitly pinned, still-active account — charged in its (== the template's)
-        //     currency even if it can't cover the charge (allowed to go negative), honoring the
-        //     user's choice.
-        //  2. Otherwise pick by currency: a same-currency account that can cover the charge.
-        //  3. Else the richest display-currency account (converted, may go negative).
-        //  4. Else the richest account in ANY currency (converted) — so a charge is never stranded
-        //     off-book when the user has no display-currency account.
-        //  5. Only when the user has no active account at all does it stay unattributed (NULL).
-        let pinned = recurring
-            .account_id
-            .filter(|id| accounts.iter().any(|a| a.id == *id));
-        let (amount, currency, account_id) = if let Some(id) = pinned {
-            (recurring.amount, recurring.currency, Some(id))
-        } else {
-            match pick_funded_account(&accounts, &balances, recurring.currency, recurring.amount) {
-                Some(account_id) => (recurring.amount, recurring.currency, Some(account_id)),
-                None => match pick_richest_account(&accounts, &balances, display_currency) {
-                    Some(id) => (
-                        convert_amount(recurring.amount, recurring.currency, display_currency, &rates),
-                        display_currency,
-                        Some(id),
-                    ),
-                    None => match pick_richest_any_currency(&accounts, &balances) {
-                        Some(account) => (
-                            convert_amount(recurring.amount, recurring.currency, account.currency, &rates),
-                            account.currency,
-                            Some(account.id),
-                        ),
-                        None => (
-                            convert_amount(recurring.amount, recurring.currency, display_currency, &rates),
-                            display_currency,
-                            None,
-                        ),
-                    },
-                },
-            }
-        };
-
-        // Reflect the charge against the chosen account's running balance for later iterations.
-        if let Some(id) = account_id {
-            if let Some(balance) = balances.get_mut(&id) {
-                *balance -= i64::from(amount);
-            }
-        }
-
-        let insert_result = conn
-            .transaction(|conn| {
-                Box::pin(async move {
-                    let expense = expenses_repo::insert_expense(
-                        conn,
-                        expenses_repo::NewExpense {
-                            user_id,
-                            name: &recurring.name,
-                            amount,
-                            currency,
-                            date: due_date,
-                            scheduled_date: None,
-                            recurring_id: Some(recurring.id),
-                            planned_expense_id: None,
-                            budget_id: None,
-                            account_id,
-                            amount_overridden: false,
-                            is_subscription: recurring.is_subscription,
-                            created_at: now,
-                        },
-                    )
-                    .await?;
-                    tags_repo::copy_recurring_tags_to_expense(conn, recurring.id, expense.id)
+            // The transaction closure must own what it uses (it can't borrow the template list
+            // across the pooled connection's lifetime).
+            let (recurring_id, name, is_subscription) =
+                (recurring.id, recurring.name.clone(), recurring.is_subscription);
+            let insert_result = conn
+                .transaction(|conn| {
+                    Box::pin(async move {
+                        let expense = expenses_repo::insert_expense(
+                            conn,
+                            expenses_repo::NewExpense {
+                                user_id,
+                                name: &name,
+                                amount,
+                                currency,
+                                date: due_date,
+                                scheduled_date: None,
+                                recurring_id: Some(recurring_id),
+                                planned_expense_id: None,
+                                budget_id: None,
+                                account_id,
+                                amount_overridden: false,
+                                is_subscription,
+                                created_at: now,
+                            },
+                        )
                         .await?;
-                    Ok::<_, diesel::result::Error>(expense)
+                        tags_repo::copy_recurring_tags_to_expense(conn, recurring_id, expense.id)
+                            .await?;
+                        Ok::<_, diesel::result::Error>(expense)
+                    })
                 })
-            })
-            .await;
+                .await;
 
-        match insert_result {
-            Ok(_) => {
-                materialized_ids.insert(recurring.id);
-                created += 1;
+            match insert_result {
+                Ok(_) => {
+                    created += 1;
+                    // Reflect the charge in the chosen account's running balance.
+                    if let Some(balance) = account_id.and_then(|id| balances.get_mut(&id)) {
+                        *balance -= i64::from(amount);
+                    }
+                }
+                Err(error) if is_recurring_due_unique_violation(&error) => {}
+                Err(error) => return Err(ApiError::from(error)),
             }
-            Err(error) if is_recurring_due_unique_violation(&error) => {
-                materialized_ids.insert(recurring.id);
-            }
-            Err(error) => return Err(ApiError::from(error)),
+            materialized_ids.insert(recurring.id);
         }
     }
 

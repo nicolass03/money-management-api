@@ -48,7 +48,9 @@ pub fn parse_snapshot_row(row: &ExchangeRateSnapshotRow) -> Option<ExchangeRates
 }
 
 pub async fn fetch_exchange_rates() -> Result<ExchangeRates, ApiError> {
-    let response = reqwest::get(RATES_API_URL)
+    let response = crate::http::client()
+        .get(RATES_API_URL)
+        .send()
         .await
         .map_err(|error| ApiError::Internal(error.to_string()))?;
     if !response.status().is_success() {
@@ -73,18 +75,29 @@ pub async fn fetch_exchange_rates() -> Result<ExchangeRates, ApiError> {
     })
 }
 
+/// Serializes snapshot reloads/refetches: when the in-memory rates go stale, concurrent requests
+/// wait for one reload instead of each reading the DB, calling the rates API and saving a snapshot.
+static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn get_exchange_rates(
     pool: &DbPool,
     force_refresh: bool,
 ) -> Result<ExchangeRates, ApiError> {
-    if !force_refresh {
-        if let Some(cached) = get_memory_rates(false) {
-            return Ok(cached);
-        }
+    if let Some(cached) = get_memory_rates(force_refresh) {
+        return Ok(cached);
+    }
+    let _refresh = REFRESH_LOCK.lock().await;
+    // Another request may have refreshed while this one waited.
+    if let Some(cached) = get_memory_rates(force_refresh) {
+        return Ok(cached);
     }
 
-    let mut conn = connection::neutral_connection(pool).await?;
-    let cached = exchange_rates_repo::get_latest_snapshot(&mut conn).await?;
+    // The connection is released before the rates API call, so a slow upstream can't pin a
+    // pooled connection.
+    let cached = {
+        let mut conn = connection::neutral_connection(pool).await?;
+        exchange_rates_repo::get_latest_snapshot(&mut conn).await?
+    };
 
     if let Some(ref snapshot) = cached {
         if let Some(parsed) = parse_snapshot_row(snapshot) {
@@ -97,6 +110,7 @@ pub async fn get_exchange_rates(
 
     match fetch_exchange_rates().await {
         Ok(fresh) => {
+            let mut conn = connection::neutral_connection(pool).await?;
             save_exchange_rates(&mut conn, &fresh).await?;
             set_memory_rates(fresh.clone());
             Ok(fresh)

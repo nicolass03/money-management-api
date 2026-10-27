@@ -52,19 +52,14 @@ pub async fn is_onboarding_complete(pool: &DbPool, user_id: Uuid) -> Result<bool
 }
 
 /// True when Supabase auth.users has a non-empty encrypted_password (invite accepted + password set).
+/// Read through the `app_user_has_password` definer function: the API's role can't see `auth.users`.
 pub async fn has_auth_password(pool: &DbPool, user_id: Uuid) -> Result<bool, ApiError> {
-    let mut conn = connection::admin_connection(pool).await?;
-    let row = sql_query(
-        "SELECT (encrypted_password IS NOT NULL AND length(encrypted_password) > 0) AS has_password
-         FROM auth.users
-         WHERE id = $1",
-    )
-    .bind::<diesel::sql_types::Uuid, _>(user_id)
-    .get_result::<PasswordCheckRow>(&mut conn)
-    .await
-    .optional()?;
-
-    Ok(row.map(|value| value.has_password).unwrap_or(false))
+    let mut conn = connection::neutral_connection(pool).await?;
+    let row = sql_query("SELECT public.app_user_has_password($1) AS has_password")
+        .bind::<diesel::sql_types::Uuid, _>(user_id)
+        .get_result::<PasswordCheckRow>(&mut conn)
+        .await?;
+    Ok(row.has_password)
 }
 
 pub async fn complete_onboarding(pool: &DbPool, user_id: Uuid) -> Result<(), ApiError> {
