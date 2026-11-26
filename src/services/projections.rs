@@ -135,8 +135,13 @@ fn effective_period_start(period: &PayPeriod, projection_start_date: Option<Naiv
         .unwrap_or(period.start_date)
 }
 
-/// Persisted (non-deleted) income dated inside `period` on projected accounts, in display currency.
-fn sum_income_in_period(inputs: &ProjectionInputs, period: &PayPeriod) -> i64 {
+/// Persisted (non-deleted) income dated inside `period` on projected accounts, in display currency,
+/// leaving out rows of `skip_schedule`.
+fn sum_income_in_period(
+    inputs: &ProjectionInputs,
+    period: &PayPeriod,
+    skip_schedule: Option<Uuid>,
+) -> i64 {
     inputs
         .income_all
         .iter()
@@ -144,6 +149,7 @@ fn sum_income_in_period(inputs: &ProjectionInputs, period: &PayPeriod) -> i64 {
             entry.deleted_at.is_none()
                 && period.contains(entry.date)
                 && !inputs.excludes(entry.account_id)
+                && !skip_schedule.is_some_and(|id| entry.schedule_id == Some(id))
         })
         .map(|entry| {
             let converted =
@@ -167,16 +173,17 @@ fn scheduled_income_keys(entries: &[IncomeRow]) -> HashSet<(Uuid, NaiveDate)> {
 /// `today`) from every pay schedule paying into a projected account that have not yet been
 /// materialized or tombstoned. Past/current occurrences come from persisted rows via
 /// `sum_income_in_period`, mirroring how expenses treat past periods as actual and future periods
-/// as projected.
+/// as projected. `skip_schedule` is left out.
 fn projected_income_in_period(
     inputs: &ProjectionInputs,
     period: &PayPeriod,
     materialized: &HashSet<(Uuid, NaiveDate)>,
     today: NaiveDate,
+    skip_schedule: Option<Uuid>,
 ) -> i64 {
     let mut total = 0;
     for schedule in &inputs.schedules {
-        if inputs.excludes(schedule.account_id) {
+        if inputs.excludes(schedule.account_id) || skip_schedule == Some(schedule.id) {
             continue;
         }
         let input = schedule_from_income(schedule);
@@ -264,8 +271,8 @@ fn crossing_transfers_in_period(
 /// Builds projection rows for the primary schedule's periods overlapping
 /// `[projection_start_date, projection_end_date]`, carrying a running balance seeded with
 /// `opening_balance`. When the start falls mid-period, that opening period runs on the opening
-/// balance alone (see the comments below). Rows on excluded accounts are left out; transfers
-/// between those and projected accounts count as money in or out.
+/// balance instead of the primary salary (see the comments below). Rows on excluded accounts are
+/// left out; transfers between those and projected accounts count as money in or out.
 pub fn build_projection_rows(
     inputs: &ProjectionInputs,
     opening_balance: i64,
@@ -305,19 +312,18 @@ pub fn build_projection_rows(
             // For the opening period (projection starts mid-period) this is the projection start
             // date, so only expenses dated on or after it count.
             let period_start_date = effective_period_start(&period, projection_start_date);
-            // The opening period runs on the accounts' starting balance alone: no salary until the
-            // next pay date, and its "free" shows that starting balance.
+            // The opening period runs on the accounts' starting balance instead of the primary
+            // schedule's salary (its "free" shows that starting balance), but any other income
+            // dated on or after the start still counts.
             let is_opening = period_start_date != period.start_date;
+            let skip_schedule = is_opening.then_some(inputs.primary_schedule.id);
+            let window = period.clip(period_start_date, period.end_date);
             let (transfers_in, transfers_out) =
-                crossing_transfers_in_period(inputs, &period, &transfer_slots, today);
+                crossing_transfers_in_period(inputs, &window, &transfer_slots, today);
 
-            let income_total = if is_opening {
-                0
-            } else {
-                sum_income_in_period(inputs, &period)
-                    + projected_income_in_period(inputs, &period, &scheduled_keys, today)
-                    + transfers_in
-            };
+            let income_total = sum_income_in_period(inputs, &window, skip_schedule)
+                + projected_income_in_period(inputs, &window, &scheduled_keys, today, skip_schedule)
+                + transfers_in;
 
             let mut expense_items = get_expense_items_in_period(
                 &expense_list,
